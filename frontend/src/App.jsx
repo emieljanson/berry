@@ -26,6 +26,8 @@ function App() {
     containScroll: false,
     skipSnaps: true,
     dragFree: false,
+    watchDrag: true,
+    watchResize: true,
   })
 
   // Fetch catalog periodically
@@ -160,130 +162,109 @@ function App() {
     }
   }, [nowPlaying?.context?.uri, nowPlaying?.track?.uri, nowPlaying?.context?.covers, nowPlaying?.track?.album, nowPlaying?.track?.artist, nowPlaying?.track?.albumCover, findMatchingCatalogItem])
 
-  // Refs for carousel
+  // Refs for carousel state
   const isSyncingRef = useRef(false)
+  const lastSyncedContextRef = useRef(null)
   const displayItemsRef = useRef(displayItems)
   
   useEffect(() => {
     displayItemsRef.current = displayItems
   }, [displayItems])
 
+  // Helper: find index of item matching the current playback
+  const findPlayingIndex = useCallback((items, contextUri, trackUri) => {
+    if (!contextUri && !trackUri) return -1
+    
+    // Try matching by context URI
+    let index = items.findIndex(item => item.uri === contextUri)
+    
+    // Try matching by currentTrack.uri
+    if (index === -1 && trackUri) {
+      index = items.findIndex(item => item.currentTrack?.uri === trackUri)
+    }
+    
+    // Check if tempItem matches (always last)
+    if (index === -1 && tempItem && (tempItem.uri === contextUri || tempItem.uri === trackUri)) {
+      index = items.length - 1
+    }
+    
+    return index
+  }, [tempItem])
+
   // Handle carousel selection change
   const onSelect = useCallback(() => {
     if (!emblaApi) return
-    const newIndex = emblaApi.selectedScrollSnap()
-    setSelectedIndex(newIndex)
+    setSelectedIndex(emblaApi.selectedScrollSnap())
   }, [emblaApi])
 
-  // Sync carousel to currently playing context
-  // This is the ONLY sync mechanism - it follows what the backend says
-  const syncCarouselToPlaying = useCallback(() => {
-    if (!emblaApi || displayItems.length === 0) return
-    if (isSyncingRef.current) return
+  // Sync carousel to playing context (only when context CHANGES)
+  useEffect(() => {
+    if (!emblaApi || displayItems.length === 0 || isSyncingRef.current) return
     
     const contextUri = nowPlaying?.context?.uri
     const trackUri = nowPlaying?.track?.uri
+    const playingKey = contextUri || trackUri
     
-    if (!contextUri && !trackUri) return
-    
-    // Find matching item by context URI or currentTrack.uri
-    let playingIndex = displayItems.findIndex(item => item.uri === contextUri)
-    
-    // If not found by context, try matching by currentTrack.uri
-    if (playingIndex === -1 && trackUri) {
-      playingIndex = displayItems.findIndex(item => item.currentTrack?.uri === trackUri)
+    // Clear ref if nothing playing, or skip if already synced
+    if (!playingKey) {
+      lastSyncedContextRef.current = null
+      return
     }
+    if (playingKey === lastSyncedContextRef.current) return
     
+    const playingIndex = findPlayingIndex(displayItems, contextUri, trackUri)
     if (playingIndex === -1) return
     
-    const currentIndex = emblaApi.selectedScrollSnap()
-    if (currentIndex === playingIndex) return
+    // Mark as synced
+    lastSyncedContextRef.current = playingKey
     
-    // Sync carousel to what's actually playing
+    // Skip scroll if already at correct position
+    if (emblaApi.selectedScrollSnap() === playingIndex) return
+    
+    // Scroll to playing item
     isSyncingRef.current = true
     emblaApi.scrollTo(playingIndex)
+    setTimeout(() => { isSyncingRef.current = false }, 500)
+  }, [emblaApi, nowPlaying?.context?.uri, nowPlaying?.track?.uri, displayItems, findPlayingIndex])
+
+  // Check if an item is currently playing
+  const isItemPlaying = useCallback((item) => {
+    return item?.uri === nowPlaying?.context?.uri
+  }, [nowPlaying?.context?.uri])
+
+  // Play an item if not already playing
+  const selectAndPlay = useCallback(async (item) => {
+    if (!item || isItemPlaying(item)) return
     
-    setTimeout(() => {
-      isSyncingRef.current = false
-    }, 500)
-  }, [emblaApi, nowPlaying?.context?.uri, nowPlaying?.track?.uri, displayItems])
-
-  // Sync carousel when nowPlaying or displayItems change
-  useEffect(() => {
-    syncCarouselToPlaying()
-  }, [syncCarouselToPlaying])
-
-  // Play item by URI - sends request and handles response
-  const playItem = useCallback(async (uri) => {
-    if (!uri) return
+    // Clear tempItem when selecting a catalog item
+    if (!item.isTemp) setTempItem(null)
     
     try {
-      const response = await fetch(`${API_URL}/api/play`, {
+      const res = await fetch(`${API_URL}/api/play`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uri })
+        body: JSON.stringify({ uri: item.uri })
       })
-      
-      const result = await response.json()
-      
-      // If play failed (timeout), the carousel will sync back automatically
-      // via the WebSocket state update (nowPlaying won't change)
-      if (!result.success) {
-        console.warn('Play request did not succeed:', result.reason)
-      }
+      const result = await res.json()
+      if (!result.success) console.warn('Play failed:', result.reason)
     } catch (err) {
       console.error('Error playing:', err)
     }
-  }, [])
+  }, [isItemPlaying])
 
-  // Check if an item is currently playing (by context URI only)
-  // We only check context URI because we want to allow playing items even if they have a currentTrack match
-  const isItemPlaying = useCallback((item) => {
-    if (!item) return false
-    const contextUri = nowPlaying?.context?.uri
-    
-    // Only match by context URI - if context is null, nothing is playing
-    if (!contextUri) return false
-    
-    // Match by context URI
-    if (item.uri === contextUri) return true
-    
-    return false
-  }, [nowPlaying?.context?.uri])
-
-  // Handle settle (when carousel stops moving) - play the selected item
+  // Handle settle (carousel stops) - play selected item
   const onSettle = useCallback(() => {
     if (!emblaApi || isSyncingRef.current) return
-    
-    const items = displayItemsRef.current
-    if (items.length === 0) return
-    
-    const index = emblaApi.selectedScrollSnap()
-    const item = items[index]
-    
-    // Only play if this item is NOT already playing
-    if (item && !isItemPlaying(item)) {
-      playItem(item.uri)
-      if (!item.isTemp) {
-        setTempItem(null)
-      }
-    }
-  }, [emblaApi, isItemPlaying, playItem])
+    const item = displayItemsRef.current[emblaApi.selectedScrollSnap()]
+    selectAndPlay(item)
+  }, [emblaApi, selectAndPlay])
 
-  // Click on a slide to select and play it
+  // Click on slide - scroll to it and play
   const onSlideClick = useCallback((index) => {
     if (!emblaApi) return
     emblaApi.scrollTo(index)
-    
-    const item = displayItemsRef.current[index]
-    
-    if (item && !isItemPlaying(item)) {
-      playItem(item.uri)
-      if (!item.isTemp) {
-        setTempItem(null)
-      }
-    }
-  }, [emblaApi, isItemPlaying, playItem])
+    selectAndPlay(displayItemsRef.current[index])
+  }, [emblaApi, selectAndPlay])
 
   // Subscribe to carousel events
   useEffect(() => {
@@ -299,11 +280,27 @@ function App() {
     }
   }, [emblaApi, onSelect, onSettle])
 
-  // Reinitialize carousel when displayItems changes
+  // Reinitialize carousel when displayItems count changes
   useEffect(() => {
     if (!emblaApi || displayItems.length === 0) return
+    
+    const contextUri = nowPlaying?.context?.uri
+    const trackUri = nowPlaying?.track?.uri
+    const targetIndex = findPlayingIndex(displayItems, contextUri, trackUri)
+    
+    // Prevent events during reInit
+    isSyncingRef.current = true
     emblaApi.reInit()
-  }, [emblaApi, displayItems.length])
+    
+    // Scroll to correct position instantly
+    if (targetIndex !== -1) {
+      emblaApi.scrollTo(targetIndex, true)
+      // Mark as synced so the sync effect doesn't re-scroll
+      lastSyncedContextRef.current = contextUri || trackUri
+    }
+    
+    setTimeout(() => { isSyncingRef.current = false }, 100)
+  }, [emblaApi, displayItems.length, nowPlaying?.context?.uri, nowPlaying?.track?.uri, findPlayingIndex])
 
   // Player controls - simple fire-and-forget
   const pause = () => fetch(`${API_URL}/api/pause`, { method: 'POST' })
