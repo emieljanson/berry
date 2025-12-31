@@ -139,6 +139,10 @@ let currentState = {
   intendedContextUri: null  // The catalog item URI we intend to play (for resume)
 };
 
+// Autoplay detection - track when user initiated a play request
+let expectedContextUri = null;  // The context URI we expect from user action
+let lastPlayRequestTime = 0;    // Timestamp of last /api/play request
+
 // Event listeners for play confirmation
 // Used by /api/play to wait for 'playing' event before returning
 let playingEventListeners = [];
@@ -204,6 +208,26 @@ async function getSavedPosition(contextUri) {
   } catch (err) {
     return null;
   }
+}
+
+// Clear saved position for a context (when it finishes naturally via autoplay)
+async function clearSavedPosition(contextUri) {
+  if (!contextUri) return;
+  
+  try {
+    const catalog = await loadCatalog();
+    const item = catalog.items.find(i => i.uri === contextUri);
+    
+    if (item?.currentTrack) {
+      delete item.currentTrack;
+      await saveCatalog(catalog);
+      console.log(`🗑️ Cleared saved position for finished context`);
+      return true;
+    }
+  } catch (err) {
+    console.error('Error clearing saved position:', err.message);
+  }
+  return false;
 }
 
 // Periodically save progress (every 10 seconds when playing)
@@ -302,17 +326,34 @@ async function handleLibrespotEvent(event) {
       break;
       
     case 'playing':
+      const previousContextUri = currentState.contextUri;
+      const newContextUri = event.data?.context_uri;
+      
+      // Autoplay detection: if context changed without user action, previous context finished
+      if (previousContextUri && newContextUri && previousContextUri !== newContextUri) {
+        const wasExpectedContext = newContextUri === expectedContextUri;
+        const recentUserAction = Date.now() - lastPlayRequestTime < 5000;
+        
+        if (!wasExpectedContext && !recentUserAction) {
+          // This is autoplay - the previous context finished naturally
+          console.log(`🏁 Context finished (autoplay detected): ${previousContextUri}`);
+          clearSavedPosition(previousContextUri);
+        }
+      }
+      
+      // Reset expected context after processing
+      expectedContextUri = null;
+      
       // Update context - set to new value or clear if no context
-      if (event.data?.context_uri) {
-        currentState.contextUri = event.data.context_uri;
+      if (newContextUri) {
+        currentState.contextUri = newContextUri;
         console.log(`   ✓ Now playing context: ${currentState.contextUri}`);
         
         // Notify any waiting play requests that playback started
         // Match on context URI (the catalog item we wanted to play)
-        const contextUri = event.data.context_uri;
         playingEventListeners = playingEventListeners.filter(listener => {
-          if (listener.contextUri === contextUri) {
-            listener.resolve({ success: true, context: contextUri });
+          if (listener.contextUri === newContextUri) {
+            listener.resolve({ success: true, context: newContextUri });
             return false; // Remove this listener
           }
           return true; // Keep listener
@@ -339,7 +380,7 @@ async function handleLibrespotEvent(event) {
         // This handles the case where we play a track and get its album/playlist as context
         playingEventListeners = playingEventListeners.filter(listener => {
           // If playing event has a context that matches, resolve it
-          if (event.data?.context_uri === listener.contextUri) {
+          if (newContextUri === listener.contextUri) {
             listener.resolve({ success: true, context: listener.contextUri });
             return false;
           }
@@ -540,6 +581,10 @@ app.post('/api/play', async (req, res) => {
   try {
     const { uri, fromBeginning } = req.body;
     console.log(`▶️ Play request: ${uri}`);
+    
+    // Track this as a user-initiated play for autoplay detection
+    expectedContextUri = uri;
+    lastPlayRequestTime = Date.now();
     
     // Save current position before switching context
     if (currentState.contextUri && currentState.contextUri !== uri) {

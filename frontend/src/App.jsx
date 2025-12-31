@@ -129,7 +129,6 @@ function App() {
     
     // Not in catalog - create temp item
     if (contextUri) {
-      // Has context (album/playlist)
       const isPlaylist = contextUri.includes('playlist')
       const track = nowPlaying.track
       const contextCovers = nowPlaying.context?.covers || []
@@ -158,34 +157,8 @@ function App() {
         
         return prevTempItem
       })
-    } else if (trackUri && nowPlaying?.track) {
-      // No context but has track (e.g. single track, radio, etc.)
-      const track = nowPlaying.track
-      
-      setTempItem(prevTempItem => {
-        const newTempItem = {
-          id: 'temp',
-          type: 'track',
-          uri: trackUri,
-          name: track.name || track.album || 'Onbekend',
-          artist: track.artist || '',
-          image: track.albumCover || null,
-          isTemp: true
-        }
-        
-        // Only update if something actually changed
-        if (!prevTempItem || 
-            prevTempItem.uri !== newTempItem.uri ||
-            prevTempItem.name !== newTempItem.name ||
-            prevTempItem.artist !== newTempItem.artist ||
-            prevTempItem.image !== newTempItem.image) {
-          return newTempItem
-        }
-        
-        return prevTempItem
-      })
     }
-  }, [nowPlaying?.context?.uri, nowPlaying?.track?.uri, nowPlaying?.context?.covers, nowPlaying?.track?.album, nowPlaying?.track?.artist, nowPlaying?.track?.albumCover, nowPlaying?.track?.name, findMatchingCatalogItem])
+  }, [nowPlaying?.context?.uri, nowPlaying?.track?.uri, nowPlaying?.context?.covers, nowPlaying?.track?.album, nowPlaying?.track?.artist, nowPlaying?.track?.albumCover, findMatchingCatalogItem])
 
   // Refs for carousel
   const isSyncingRef = useRef(false)
@@ -431,43 +404,37 @@ function App() {
   }
   
   const progress = track?.duration ? (track.position / track.duration) * 100 : 0
-  const lastProgressRef = useRef(0)
+  const initialProgressRef = useRef(0)
   const lastTrackUriRef = useRef(null)
-  const [shouldAnimate, setShouldAnimate] = useState(false)
+  const previousProgressRef = useRef(0)
   
-  // Determine if we should animate the progress bar
-  // Only animate when playing AND progress is incrementing normally (not jumping)
+  // Track initial progress when a track starts/resumes
   useEffect(() => {
     const currentTrackUri = track?.uri
-    const lastProgress = lastProgressRef.current
-    const progressDelta = progress - lastProgress
+    const previousTrackUri = lastTrackUriRef.current
     
-    // Track changed - no animation
-    if (currentTrackUri !== lastTrackUriRef.current) {
-      setShouldAnimate(false)
+    // If track changed, capture initial progress
+    if (currentTrackUri && currentTrackUri !== previousTrackUri) {
+      initialProgressRef.current = progress
       lastTrackUriRef.current = currentTrackUri
-      lastProgressRef.current = progress
-      return
+      previousProgressRef.current = progress
+    } else if (!currentTrackUri) {
+      // Track stopped - reset
+      initialProgressRef.current = 0
+      lastTrackUriRef.current = null
+      previousProgressRef.current = 0
     }
-    
-    // Progress jumped (seek, resume, or went backwards) - no animation
-    // Small threshold (2%) for normal playback updates
-    if (progressDelta > 2 || progressDelta < 0) {
-      setShouldAnimate(false)
-      lastProgressRef.current = progress
-      return
-    }
-    
-    // Normal increment while playing - animate
-    if (isPlaying && progressDelta > 0) {
-      setShouldAnimate(true)
-    } else {
-      // Not playing or no progress change - no animation
-      setShouldAnimate(false)
-    }
-    
-    lastProgressRef.current = progress
-  }, [track?.uri, progress, isPlaying])
+  }, [track?.uri, progress])
+  
+  // Only animate if playing and progress is increasing beyond initial position
+  const isProgressIncreasing = progress > previousProgressRef.current
+  const isBeyondInitial = progress > initialProgressRef.current
+  const shouldAnimateProgress = isPlaying && isProgressIncreasing && isBeyondInitial
+  
+  // Update previous progress after render
+  useEffect(() => {
+    previousProgressRef.current = progress
+  }, [progress])
   
   const contextUri = nowPlaying?.context?.uri || ''
   const trackUri = nowPlaying?.track?.uri || ''
@@ -577,7 +544,7 @@ function App() {
                 className="progress-fill" 
                 style={{ 
                   width: `${progress}%`,
-                  transition: shouldAnimate ? 'width 1s linear' : 'none'
+                  transition: shouldAnimateProgress ? 'width 1s linear' : 'none'
                 }} 
               />
             </div>
