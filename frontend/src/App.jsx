@@ -1,16 +1,90 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import useEmblaCarousel from 'embla-carousel-react'
+import { api, WS_URL, getImageUrl } from './api'
 import './App.css'
 
-// API URL for REST endpoints
-const API_URL = window.location.hostname === 'localhost' 
-  ? 'http://localhost:3001' 
-  : `http://${window.location.hostname}:3001`
+// Format milliseconds to mm:ss
+const formatTime = (ms) => {
+  if (!ms) return '0:00'
+  const seconds = Math.floor(ms / 1000)
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
 
-// WebSocket URL for real-time state updates
-const WS_URL = window.location.hostname === 'localhost'
-  ? 'ws://localhost:3002'
-  : `ws://${window.location.hostname}:3002`
+// Custom hook for progress bar animation logic
+const useProgressAnimation = (track, isPlaying) => {
+  const progress = track?.duration ? (track.position / track.duration) * 100 : 0
+  const lastTrackUriRef = useRef(null)
+  const initialProgressRef = useRef(0)
+  const previousProgressRef = useRef(0)
+  
+  // Track changes - capture initial progress
+  useEffect(() => {
+    const currentUri = track?.uri
+    if (currentUri && currentUri !== lastTrackUriRef.current) {
+      // New track - capture starting position
+      initialProgressRef.current = progress
+      previousProgressRef.current = progress
+      lastTrackUriRef.current = currentUri
+    } else if (!currentUri) {
+      // Track stopped - reset
+      initialProgressRef.current = 0
+      previousProgressRef.current = 0
+      lastTrackUriRef.current = null
+    }
+  }, [track?.uri, progress])
+  
+  // Update previous progress after render
+  useEffect(() => {
+    previousProgressRef.current = progress
+  }, [progress])
+  
+  // Only animate if: playing AND progress increasing AND beyond initial position
+  const shouldAnimate = isPlaying && 
+    progress > previousProgressRef.current && 
+    progress > initialProgressRef.current
+  
+  return {
+    progress,
+    shouldAnimate,
+    currentTime: formatTime(track?.position),
+    totalTime: formatTime(track?.duration)
+  }
+}
+
+// Playback controls component - reusable for normal and compact views
+const PlaybackControls = ({ isPlaying, onPrev, onToggle, onNext, compact }) => (
+  <div className={`controls ${compact ? 'compact' : ''}`}>
+    <button className={`control-btn ${compact ? 'small' : ''}`} onClick={onPrev} aria-label="Vorige">
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
+      </svg>
+    </button>
+    
+    <button 
+      className={`control-btn play-btn ${compact ? 'small' : ''}`}
+      onClick={onToggle}
+      aria-label={isPlaying ? 'Pauze' : 'Afspelen'}
+    >
+      {isPlaying ? (
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+        </svg>
+      ) : (
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M8 5v14l11-7z"/>
+        </svg>
+      )}
+    </button>
+    
+    <button className={`control-btn ${compact ? 'small' : ''}`} onClick={onNext} aria-label="Volgende">
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+      </svg>
+    </button>
+  </div>
+)
 
 function App() {
   const [catalog, setCatalog] = useState({ items: [] })
@@ -34,8 +108,7 @@ function App() {
   useEffect(() => {
     const fetchCatalog = async () => {
       try {
-        const res = await fetch(`${API_URL}/api/catalog`)
-        const data = await res.json()
+        const data = await api.getCatalog()
         const filteredItems = (data.items || []).filter(item => item.type !== 'track')
         setCatalog({ ...data, items: filteredItems })
       } catch (err) {
@@ -240,12 +313,7 @@ function App() {
     if (!item.isTemp) setTempItem(null)
     
     try {
-      const res = await fetch(`${API_URL}/api/play`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uri: item.uri })
-      })
-      const result = await res.json()
+      const result = await api.play(item.uri)
       if (!result.success) console.warn('Play failed:', result.reason)
     } catch (err) {
       console.error('Error playing:', err)
@@ -303,21 +371,13 @@ function App() {
   }, [emblaApi, displayItems.length, nowPlaying?.context?.uri, nowPlaying?.track?.uri, findPlayingIndex])
 
   // Player controls - simple fire-and-forget
-  const pause = () => fetch(`${API_URL}/api/pause`, { method: 'POST' })
-  const resume = () => fetch(`${API_URL}/api/resume`, { method: 'POST' })
-  const next = () => fetch(`${API_URL}/api/next`, { method: 'POST' })
+  const pause = () => api.pause()
+  const resume = () => api.resume()
+  const next = () => api.next()
   
   const prev = () => {
     const position = nowPlaying?.track?.position || 0
-    if (position < 10000) {
-      return fetch(`${API_URL}/api/prev`, { method: 'POST' })
-    } else {
-      return fetch(`${API_URL}/api/seek`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ position: 0 })
-      })
-    }
+    return position < 10000 ? api.prev() : api.seek(0)
   }
   
   const togglePlayPause = () => {
@@ -328,7 +388,7 @@ function App() {
     } else {
       const selectedItem = displayItems[selectedIndex]
       if (selectedItem) {
-        return playItem(selectedItem.uri)
+        return selectAndPlay(selectedItem)
       }
     }
   }
@@ -344,26 +404,19 @@ function App() {
       const isPlaylist = contextUri.includes('playlist')
       const isAlbum = contextUri.includes('album')
       
-      const res = await fetch(`${API_URL}/api/catalog`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: isPlaylist ? 'playlist' : 'album',
-          uri: contextUri,
-          name: isAlbum ? nowPlaying.track.album : 'Playlist',
-          artist: nowPlaying.track.artist,
-          album: nowPlaying.track.album,
-          image: nowPlaying.track.albumCover
-        })
+      const data = await api.saveToCatalog({
+        type: isPlaylist ? 'playlist' : 'album',
+        uri: contextUri,
+        name: isAlbum ? nowPlaying.track.album : 'Playlist',
+        artist: nowPlaying.track.artist,
+        album: nowPlaying.track.album,
+        image: nowPlaying.track.albumCover
       })
-      
-      const data = await res.json()
       
       if (data.success) {
         isSyncingRef.current = true
         
-        const catalogRes = await fetch(`${API_URL}/api/catalog`)
-        const catalogData = await catalogRes.json()
+        const catalogData = await api.getCatalog()
         const filteredItems = (catalogData.items || []).filter(item => item.type !== 'track')
         const newItemIndex = filteredItems.findIndex(item => item.uri === contextUri)
         
@@ -392,46 +445,8 @@ function App() {
   const isPaused = nowPlaying?.paused
   const isBuffering = nowPlaying?.buffering
   
-  const formatTime = (ms) => {
-    if (!ms) return '0:00'
-    const seconds = Math.floor(ms / 1000)
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
-  
-  const progress = track?.duration ? (track.position / track.duration) * 100 : 0
-  const initialProgressRef = useRef(0)
-  const lastTrackUriRef = useRef(null)
-  const previousProgressRef = useRef(0)
-  
-  // Track initial progress when a track starts/resumes
-  useEffect(() => {
-    const currentTrackUri = track?.uri
-    const previousTrackUri = lastTrackUriRef.current
-    
-    // If track changed, capture initial progress
-    if (currentTrackUri && currentTrackUri !== previousTrackUri) {
-      initialProgressRef.current = progress
-      lastTrackUriRef.current = currentTrackUri
-      previousProgressRef.current = progress
-    } else if (!currentTrackUri) {
-      // Track stopped - reset
-      initialProgressRef.current = 0
-      lastTrackUriRef.current = null
-      previousProgressRef.current = 0
-    }
-  }, [track?.uri, progress])
-  
-  // Only animate if playing and progress is increasing beyond initial position
-  const isProgressIncreasing = progress > previousProgressRef.current
-  const isBeyondInitial = progress > initialProgressRef.current
-  const shouldAnimateProgress = isPlaying && isProgressIncreasing && isBeyondInitial
-  
-  // Update previous progress after render
-  useEffect(() => {
-    previousProgressRef.current = progress
-  }, [progress])
+  // Progress bar animation
+  const { progress, shouldAnimate, currentTime, totalTime } = useProgressAnimation(track, isPlaying)
   
   const contextUri = nowPlaying?.context?.uri || ''
   const trackUri = nowPlaying?.track?.uri || ''
@@ -452,8 +467,7 @@ function App() {
           {[0, 1, 2, 3].map((i) => {
             const img = covers[i]
             if (img) {
-              const imgSrc = img.startsWith('/') ? `${API_URL}${img}` : img
-              return <img key={i} src={imgSrc} alt="" />
+              return <img key={i} src={getImageUrl(img)} alt="" />
             }
             return <div key={i} className="composite-empty" />
           })}
@@ -464,8 +478,7 @@ function App() {
     if (!item.image) {
       return <div className="slide-img slide-placeholder" />
     }
-    const imgSrc = item.image?.startsWith('/') ? `${API_URL}${item.image}` : item.image
-    return <img src={imgSrc} alt={item.name} className="slide-img" />
+    return <img src={getImageUrl(item.image)} alt={item.name} className="slide-img" />
   }
 
   return (
@@ -535,49 +548,26 @@ function App() {
 
           {/* Progress Bar */}
           <div className="progress-container">
-            <span className="time-current">{formatTime(track?.position)}</span>
+            <span className="time-current">{currentTime}</span>
             <div className="progress-bar">
               <div 
                 className="progress-fill" 
                 style={{ 
                   width: `${progress}%`,
-                  transition: shouldAnimateProgress ? 'width 1s linear' : 'none'
+                  transition: shouldAnimate ? 'width 1s linear' : 'none'
                 }} 
               />
             </div>
-            <span className="time-total">{formatTime(track?.duration)}</span>
+            <span className="time-total">{totalTime}</span>
           </div>
 
           {/* Playback Controls */}
-          <div className="controls">
-            <button className="control-btn" onClick={prev} aria-label="Vorige">
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
-              </svg>
-            </button>
-            
-            <button 
-              className="control-btn play-btn" 
-              onClick={togglePlayPause}
-              aria-label={isPlaying ? 'Pauze' : 'Afspelen'}
-            >
-              {isPlaying ? (
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z"/>
-                </svg>
-              )}
-            </button>
-            
-            <button className="control-btn" onClick={next} aria-label="Volgende">
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
-              </svg>
-            </button>
-          </div>
+          <PlaybackControls 
+            isPlaying={isPlaying}
+            onPrev={prev}
+            onToggle={togglePlayPause}
+            onNext={next}
+          />
         </>
       ) : (
         /* Empty State */
@@ -594,29 +584,13 @@ function App() {
                 <p className="preview-artist">{track.artist}</p>
               </div>
               
-              <div className="controls compact">
-                <button className="control-btn small" onClick={prev}>
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
-                  </svg>
-                </button>
-                <button className="control-btn play-btn small" onClick={togglePlayPause}>
-                  {isPlaying ? (
-                    <svg viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M8 5v14l11-7z"/>
-                    </svg>
-                  )}
-                </button>
-                <button className="control-btn small" onClick={next}>
-                  <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
-                  </svg>
-                </button>
-              </div>
+              <PlaybackControls 
+                isPlaying={isPlaying}
+                onPrev={prev}
+                onToggle={togglePlayPause}
+                onNext={next}
+                compact
+              />
               
               {hasContext && !isContextSaved && (
                 <button 
