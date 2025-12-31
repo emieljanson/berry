@@ -302,7 +302,7 @@ async function handleLibrespotEvent(event) {
       break;
       
     case 'playing':
-      // Only update context when actually playing (play succeeded)
+      // Update context - set to new value or clear if no context
       if (event.data?.context_uri) {
         currentState.contextUri = event.data.context_uri;
         console.log(`   ✓ Now playing context: ${currentState.contextUri}`);
@@ -322,7 +322,16 @@ async function handleLibrespotEvent(event) {
         if (currentState.contextUri.includes('playlist')) {
           collectCoverForContext(currentState.contextUri);
         }
+      } else {
+        // No context URI - playing a track without album/playlist context
+        // Clear the old context so frontend knows this is a contextless track
+        currentState.contextUri = null;
+        console.log(`   ✓ Now playing without context (single track/radio)`);
       }
+      
+      // Clear intendedContextUri - we're now playing something (whether it matches or not)
+      currentState.intendedContextUri = null;
+      
       if (event.data?.uri) {
         currentState.trackUri = event.data.uri;
         
