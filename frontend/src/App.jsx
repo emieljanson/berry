@@ -24,35 +24,18 @@ const formatTime = (ms) => {
 // Custom hook for progress bar animation logic
 const useProgressAnimation = (track, isPlaying) => {
   const progress = track?.duration ? (track.position / track.duration) * 100 : 0
-  const lastTrackUriRef = useRef(null)
-  const initialProgressRef = useRef(0)
-  const previousProgressRef = useRef(0)
+  const lastPositionRef = useRef(track?.position || 0)
   
-  // Track changes - capture initial progress
+  const position = track?.position || 0
+  const diff = Math.abs(position - lastPositionRef.current)
+  
+  // Animate only if playing AND small increment (< 1.5s = normal playback)
+  const shouldAnimate = isPlaying && diff > 0 && diff < 1500
+  
+  // Update ref after render
   useEffect(() => {
-    const currentUri = track?.uri
-    if (currentUri && currentUri !== lastTrackUriRef.current) {
-      // New track - capture starting position
-      initialProgressRef.current = progress
-      previousProgressRef.current = progress
-      lastTrackUriRef.current = currentUri
-    } else if (!currentUri) {
-      // Track stopped - reset
-      initialProgressRef.current = 0
-      previousProgressRef.current = 0
-      lastTrackUriRef.current = null
-    }
-  }, [track?.uri, progress])
-  
-  // Update previous progress after render
-  useEffect(() => {
-    previousProgressRef.current = progress
-  }, [progress])
-  
-  // Only animate if: playing AND progress increasing AND beyond initial position
-  const shouldAnimate = isPlaying && 
-    progress > previousProgressRef.current && 
-    progress > initialProgressRef.current
+    lastPositionRef.current = position
+  })
   
   return {
     progress,
