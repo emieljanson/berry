@@ -391,8 +391,20 @@ function App() {
   const onSlideClick = useCallback((index) => {
     if (!emblaApi) return
     emblaApi.scrollTo(index)
-    selectAndPlay(displayItemsRef.current[index])
-  }, [emblaApi, selectAndPlay])
+    
+    const item = displayItemsRef.current[index]
+    // If clicking the currently active item, toggle play/pause
+    if (item && isItemPlaying(item)) {
+      if (nowPlaying?.playing) {
+        api.pause()
+      } else {
+        suppressUntilPlayRef.current = false
+        api.resume()
+      }
+    } else {
+      selectAndPlay(item)
+    }
+  }, [emblaApi, selectAndPlay, isItemPlaying, nowPlaying?.playing])
 
   // Subscribe to carousel events
   useEffect(() => {
