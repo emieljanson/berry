@@ -4,6 +4,7 @@ import Carousel from './components/Carousel'
 import { PlaybackControls, ProgressBar, useProgressAnimation } from './components/Controls'
 import Toast from './components/Toast'
 import SleepOverlay from './components/SleepOverlay'
+import { useSleepMode } from './hooks/useSleepMode'
 import './App.css'
 
 // Toast messages
@@ -24,14 +25,13 @@ function App() {
   const [deleteMode, setDeleteMode] = useState(null)
   const [deleting, setDeleting] = useState(false)
   const [toast, setToast] = useState(null)
-  const [isScreenOff, setIsScreenOff] = useState(false)
   const [pendingItem, setPendingItem] = useState(null)
   
   const suppressUntilPlayRef = useRef(false)
   const toastTimeoutRef = useRef(null)
-  const sleepTimerRef = useRef(null)
-  const isPlayingRef = useRef(false)
-  const isScreenOffRef = useRef(false)
+  
+  // Sleep mode - screen off after inactivity when not playing
+  const isScreenOff = useSleepMode(nowPlaying?.playing)
 
   // Show toast notification
   const showToast = useCallback((message) => {
@@ -308,57 +308,6 @@ function App() {
       setDeleteMode(null)
     }
   }
-
-  // Sleep mode - screen off after inactivity (when not playing)
-  useEffect(() => {
-    const wakeUp = () => {
-      if (isScreenOffRef.current) {
-        isScreenOffRef.current = false
-        setIsScreenOff(false)
-        api.screenOn()
-      }
-    }
-
-    const startSleepTimer = () => {
-      clearTimeout(sleepTimerRef.current)
-      sleepTimerRef.current = setTimeout(() => {
-        if (!isPlayingRef.current && !isScreenOffRef.current) {
-          isScreenOffRef.current = true
-          setIsScreenOff(true)
-          api.screenOff()
-        }
-      }, 2 * 60 * 1000) // 2 minutes
-    }
-
-    const handleActivity = () => {
-      wakeUp()
-      startSleepTimer()
-    }
-
-    window.addEventListener('touchstart', handleActivity)
-    window.addEventListener('mousedown', handleActivity)
-    startSleepTimer()
-
-    return () => {
-      window.removeEventListener('touchstart', handleActivity)
-      window.removeEventListener('mousedown', handleActivity)
-      clearTimeout(sleepTimerRef.current)
-    }
-  }, [])
-
-  // Keep playing ref in sync
-  useEffect(() => {
-    isPlayingRef.current = nowPlaying?.playing || false
-  }, [nowPlaying?.playing])
-
-  // Wake when music starts
-  useEffect(() => {
-    if (nowPlaying?.playing && isScreenOffRef.current) {
-      isScreenOffRef.current = false
-      setIsScreenOff(false)
-      api.screenOn()
-    }
-  }, [nowPlaying?.playing])
 
   // Derived state
   const track = nowPlaying?.track
