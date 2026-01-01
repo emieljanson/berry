@@ -20,12 +20,14 @@ echo -e "${GREEN}🍓 Berry Pi Development${NC}"
 echo "========================"
 echo ""
 
-# Cleanup function - stop everything on Pi when script exits
+# Cleanup function - stop dev processes and restart systemd services
 cleanup() {
     echo ""
-    echo -e "${YELLOW}🛑 Stopping services on Pi...${NC}"
+    echo -e "${YELLOW}🛑 Stopping dev services on Pi...${NC}"
     ssh $PI_HOST "pkill -f 'go-librespot' 2>/dev/null; pkill -f 'node.*server' 2>/dev/null; pkill -f 'vite' 2>/dev/null" 2>/dev/null || true
-    echo -e "${GREEN}✓ All services stopped${NC}"
+    echo -e "${BLUE}🔄 Restarting systemd services...${NC}"
+    ssh $PI_HOST "sudo systemctl start berry-librespot berry-backend berry-frontend" 2>/dev/null || true
+    echo -e "${GREEN}✓ Back to production mode${NC}"
     exit 0
 }
 trap cleanup SIGINT SIGTERM
@@ -64,9 +66,13 @@ echo ""
 # Start services on Pi via SSH
 echo -e "${BLUE}🚀 Starting services on Pi...${NC}"
 
-# Kill any existing processes and start fresh
+# Stop systemd services and existing processes, then start fresh
 ssh -t $PI_HOST << 'ENDSSH'
-# Kill existing processes
+# Stop systemd services first (they auto-restart, so must stop them)
+echo "Stopping systemd services..."
+sudo systemctl stop berry-backend berry-librespot berry-frontend 2>/dev/null || true
+
+# Kill any remaining processes
 pkill -f "go-librespot" 2>/dev/null || true
 pkill -f "node.*server" 2>/dev/null || true  
 pkill -f "vite" 2>/dev/null || true
