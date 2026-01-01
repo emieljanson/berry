@@ -53,4 +53,40 @@ export const api = {
 export const getImageUrl = (path) => 
   path?.startsWith('/') ? `${API_URL}${path}` : path
 
+// WebSocket with auto-reconnect
+export function createWebSocket(onMessage, onConnect) {
+  let ws = null
+  let reconnectTimer = null
+  let isIntentionallyClosed = false
 
+  const connect = () => {
+    ws = new WebSocket(WS_URL)
+    
+    ws.onopen = () => {
+      console.log('WebSocket connected')
+      if (onConnect) onConnect()
+    }
+    
+    ws.onmessage = onMessage
+    
+    ws.onclose = () => {
+      if (!isIntentionallyClosed) {
+        console.log('WebSocket closed, reconnecting in 3s...')
+        reconnectTimer = setTimeout(connect, 3000)
+      }
+    }
+    
+    ws.onerror = (err) => {
+      console.error('WebSocket error:', err)
+    }
+  }
+
+  connect()
+
+  // Return cleanup function
+  return () => {
+    isIntentionallyClosed = true
+    clearTimeout(reconnectTimer)
+    if (ws) ws.close()
+  }
+}

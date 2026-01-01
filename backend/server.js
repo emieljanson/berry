@@ -128,7 +128,7 @@ app.use(cors());
 app.use(express.json());
 
 // ============================================
-// State - bijgehouden via WebSocket events
+// State - tracked via WebSocket events
 // ============================================
 
 let currentState = {
@@ -308,10 +308,6 @@ function connectWebSocket() {
 async function handleLibrespotEvent(event) {
   console.log(`📡 Event: ${event.type}`);
   
-  // #region agent log
-  fetch('http://127.0.0.1:7244/ingest/794c737d-9e69-4ad3-b236-3e681c4ae44f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:267',message:'Librespot event received',data:{type:event.type,contextUri:event.data?.context_uri,trackUri:event.data?.uri,playOrigin:event.data?.play_origin},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-  // #endregion
-  
   let shouldBroadcast = false;
   
   switch (event.type) {
@@ -401,16 +397,8 @@ async function handleLibrespotEvent(event) {
         currentState.contextUri = event.data.context_uri;
       }
       
-      // #region agent log
-      fetch('http://127.0.0.1:7244/ingest/794c737d-9e69-4ad3-b236-3e681c4ae44f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:378',message:'Stopped/Paused event',data:{eventType:event.type,contextUri:currentState.contextUri,trackUri:currentState.trackUri,eventContextUri:event.data?.context_uri},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
-      
       // If stopped and we had an intended context, clear it (album/playlist finished)
       if (event.type === 'stopped' && currentState.intendedContextUri) {
-        // #region agent log
-        fetch('http://127.0.0.1:7244/ingest/794c737d-9e69-4ad3-b236-3e681c4ae44f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:390',message:'Album/playlist finished - clearing intended context',data:{intendedContext:currentState.intendedContextUri,contextUri:currentState.contextUri},timestamp:Date.now(),sessionId:'debug-session',runId:'run3',hypothesisId:'E'})}).catch(()=>{});
-        // #endregion
-        
         currentState.intendedContextUri = null;
       }
       
@@ -675,23 +663,12 @@ app.post('/api/play', async (req, res) => {
       
       // Disable repeat - albums/playlists should stop when finished
       try {
-        // #region agent log
-        fetch('http://127.0.0.1:7244/ingest/794c737d-9e69-4ad3-b236-3e681c4ae44f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:593',message:'Setting repeat mode to off',data:{contextUri:uri},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
-        
-        const repeatResponse = await fetch(`${LIBRESPOT_URL}/player/repeat`, {
+        await fetch(`${LIBRESPOT_URL}/player/repeat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: 'off' })
         });
-        
-        // #region agent log
-        fetch('http://127.0.0.1:7244/ingest/794c737d-9e69-4ad3-b236-3e681c4ae44f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:600',message:'Repeat mode response',data:{status:repeatResponse.status,ok:repeatResponse.ok,contextUri:uri},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
       } catch (err) {
-        // #region agent log
-        fetch('http://127.0.0.1:7244/ingest/794c737d-9e69-4ad3-b236-3e681c4ae44f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'server.js:602',message:'Repeat mode error',data:{error:err.message,contextUri:uri},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
         // Ignore repeat mode errors
       }
     } else {

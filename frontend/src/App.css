@@ -77,6 +77,45 @@
   pointer-events: auto;
 }
 
+/* ==========================================
+   Error Screen
+   ========================================== */
+
+.error-screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  cursor: pointer;
+}
+
+.error-content {
+  text-align: center;
+  color: var(--text-primary);
+}
+
+.error-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+}
+
+.error-content h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.error-content p {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
 html, body {
   overflow: hidden;
   touch-action: pan-y;
