@@ -67,7 +67,8 @@ const PlaybackControls = ({ isPlaying, onPrev, onToggle, onNext, compact }) => (
   <div className={`controls ${compact ? 'compact' : ''}`}>
     <button className={`control-btn ${compact ? 'small' : ''}`} onClick={onPrev} aria-label="Vorige">
       <svg viewBox="0 0 24 24" fill="currentColor">
-        <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
+        <rect x="6" y="5" width="2.5" height="14" rx="1.25"/>
+        <path d="M10.5 11.3c-.3.2-.3.6 0 .9l7 4.8c.4.3 1 0 1-.5V7.5c0-.5-.6-.8-1-.5l-7 4.3z"/>
       </svg>
     </button>
     
@@ -78,18 +79,20 @@ const PlaybackControls = ({ isPlaying, onPrev, onToggle, onNext, compact }) => (
     >
       {isPlaying ? (
         <svg viewBox="0 0 24 24" fill="currentColor">
-          <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+          <rect x="6" y="5" width="4" height="14" rx="1.5"/>
+          <rect x="14" y="5" width="4" height="14" rx="1.5"/>
         </svg>
       ) : (
         <svg viewBox="0 0 24 24" fill="currentColor">
-          <path d="M8 5v14l11-7z"/>
+          <path d="M8 6.82c0-.87.96-1.4 1.7-.94l8.56 5.18c.66.4.66 1.38 0 1.78l-8.56 5.18c-.74.46-1.7-.07-1.7-.94V6.82z"/>
         </svg>
       )}
     </button>
     
     <button className={`control-btn ${compact ? 'small' : ''}`} onClick={onNext} aria-label="Volgende">
       <svg viewBox="0 0 24 24" fill="currentColor">
-        <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+        <path d="M6.5 7.5c0-.5.6-.8 1-.5l7 4.3c.3.2.3.6 0 .9l-7 4.8c-.4.3-1 0-1-.5V7.5z"/>
+        <rect x="15.5" y="5" width="2.5" height="14" rx="1.25"/>
       </svg>
     </button>
   </div>
@@ -647,7 +650,8 @@ function App() {
                             <div className="save-spinner" />
                           ) : (
                             <svg viewBox="0 0 24 24" fill="currentColor">
-                              <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                              <rect x="5" y="10.5" width="14" height="3" rx="1.5"/>
+                              <rect x="10.5" y="5" width="3" height="14" rx="1.5"/>
                             </svg>
                           )}
                         </button>
@@ -667,7 +671,7 @@ function App() {
                             <div className="save-spinner" />
                           ) : (
                             <svg viewBox="0 0 24 24" fill="currentColor">
-                              <path d="M19 13H5v-2h14v2z"/>
+                              <rect x="5" y="10.5" width="14" height="3" rx="1.5"/>
                             </svg>
                           )}
                         </button>

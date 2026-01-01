@@ -415,8 +415,8 @@ body {
 }
 
 .control-btn svg {
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
 }
 
 .control-btn:not(.play-btn) {
@@ -455,8 +455,8 @@ body {
 }
 
 .play-btn svg {
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
 }
 
 .play-btn.small svg {
