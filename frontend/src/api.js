@@ -54,17 +54,23 @@ export const getImageUrl = (path) =>
   path?.startsWith('/') ? `${API_URL}${path}` : path
 
 // WebSocket with auto-reconnect
-export function createWebSocket(onMessage, onConnect) {
+export function createWebSocket(onMessage, onReconnect) {
   let ws = null
   let reconnectTimer = null
   let isIntentionallyClosed = false
+  let hasConnectedBefore = false
 
   const connect = () => {
     ws = new WebSocket(WS_URL)
     
     ws.onopen = () => {
       console.log('WebSocket connected')
-      if (onConnect) onConnect()
+      // Call onReconnect only on reconnections (not initial connect)
+      if (hasConnectedBefore && onReconnect) {
+        console.log('WebSocket reconnected - forcing sync')
+        onReconnect()
+      }
+      hasConnectedBefore = true
     }
     
     ws.onmessage = onMessage

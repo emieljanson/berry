@@ -7,7 +7,6 @@ const Carousel = ({
   selectedIndex, 
   setSelectedIndex,
   nowPlaying,
-  tempItem,
   deleteMode,
   setDeleteMode,
   deleting,
@@ -15,28 +14,37 @@ const Carousel = ({
   onSlideClick,
   onSaveContext,
   onDeleteItem,
+  onTogglePlayPause,
   isItemPlaying,
-  findPlayingIndex
+  findPlayingIndex,
+  pendingItem,
+  setPendingItem
 }) => {
   const [emblaRef, emblaApi] = useEmblaCarousel({
-    loop: false,
     align: 'center',
     containScroll: false,
     skipSnaps: true,
-    dragFree: false,
-    watchDrag: true,
-    watchResize: true,
   })
 
-  // Refs for carousel state
-  const isSyncingRef = useRef(false)
-  const lastSyncedContextRef = useRef(null)
+  // Core refs
   const displayItemsRef = useRef(displayItems)
   const longPressTimerRef = useRef(null)
+  const playTimerRef = useRef(null)
+  const lastPlayedByUsRef = useRef(null)
+  const lastSyncedContextRef = useRef(null)
+  const isSyncingRef = useRef(false)
+  const userInteractingRef = useRef(false)
+  const pointerDownSnapRef = useRef(null)
   
   useEffect(() => {
     displayItemsRef.current = displayItems
   }, [displayItems])
+
+  // Cleanup timers on unmount
+  useEffect(() => () => {
+    clearTimeout(playTimerRef.current)
+    clearTimeout(longPressTimerRef.current)
+  }, [])
 
   // Handle carousel selection change
   const onSelect = useCallback(() => {
@@ -44,30 +52,80 @@ const Carousel = ({
     setSelectedIndex(emblaApi.selectedScrollSnap())
   }, [emblaApi, setSelectedIndex])
 
-  // Handle settle (carousel stops) - play selected item
+  // Handle settle - start 1s auto-play timer
   const onSettle = useCallback(() => {
-    if (!emblaApi || isSyncingRef.current) return
-    const item = displayItemsRef.current[emblaApi.selectedScrollSnap()]
-    onSlideClick(item, emblaApi.selectedScrollSnap())
-  }, [emblaApi, onSlideClick])
+    if (!emblaApi) return
+    
+    const currentIndex = emblaApi.selectedScrollSnap()
+    const currentItem = displayItemsRef.current[currentIndex]
+    
+    clearTimeout(playTimerRef.current)
+    
+    // If this item is already playing, we're done
+    if (isItemPlaying(currentItem)) {
+      setPendingItem(null)
+      userInteractingRef.current = false
+      return
+    }
+    
+    // Set pending item (UI shows this item's info) and start 1s timer
+    setPendingItem(currentItem)
+    
+    playTimerRef.current = setTimeout(() => {
+      if (isItemPlaying(currentItem)) {
+        setPendingItem(null)
+        userInteractingRef.current = false
+        return
+      }
+      
+      lastPlayedByUsRef.current = currentItem?.uri
+      onSlideClick(currentItem, currentIndex)
+      setPendingItem(null)
+      
+      // Allow sync again after play propagates
+      setTimeout(() => {
+        userInteractingRef.current = false
+      }, 500)
+    }, 1000)
+  }, [emblaApi, isItemPlaying, onSlideClick, setPendingItem])
 
   // Subscribe to carousel events
   useEffect(() => {
     if (!emblaApi) return
     
+    const onPointerDown = () => {
+      pointerDownSnapRef.current = emblaApi.selectedScrollSnap()
+      userInteractingRef.current = true
+      clearTimeout(playTimerRef.current)
+    }
+    
+    const onPointerUp = () => {
+      const snapAtUp = emblaApi.selectedScrollSnap()
+      // If snap didn't change, it was a tap - toggle play/pause
+      if (snapAtUp === pointerDownSnapRef.current) {
+        onTogglePlayPause()
+      }
+    }
+    
     emblaApi.on('select', onSelect)
     emblaApi.on('settle', onSettle)
+    emblaApi.on('pointerDown', onPointerDown)
+    emblaApi.on('pointerUp', onPointerUp)
     onSelect()
     
     return () => {
       emblaApi.off('select', onSelect)
       emblaApi.off('settle', onSettle)
+      emblaApi.off('pointerDown', onPointerDown)
+      emblaApi.off('pointerUp', onPointerUp)
+      clearTimeout(playTimerRef.current)
     }
-  }, [emblaApi, onSelect, onSettle])
+  }, [emblaApi, onSelect, onSettle, onTogglePlayPause])
 
-  // Sync carousel to playing context (only when context CHANGES)
+  // Sync carousel to playing context (external changes only)
   useEffect(() => {
     if (!emblaApi || displayItems.length === 0 || isSyncingRef.current) return
+    if (userInteractingRef.current || pendingItem) return
     
     const contextUri = nowPlaying?.context?.uri
     const trackUri = nowPlaying?.track?.uri
@@ -77,6 +135,13 @@ const Carousel = ({
       lastSyncedContextRef.current = null
       return
     }
+    
+    // Skip sync for item we just started
+    if (playingKey === lastPlayedByUsRef.current) {
+      lastPlayedByUsRef.current = null
+      return
+    }
+    
     if (playingKey === lastSyncedContextRef.current) return
     
     const playingIndex = findPlayingIndex(displayItems, contextUri, trackUri)
@@ -89,9 +154,9 @@ const Carousel = ({
     isSyncingRef.current = true
     emblaApi.scrollTo(playingIndex)
     setTimeout(() => { isSyncingRef.current = false }, 500)
-  }, [emblaApi, nowPlaying?.context?.uri, nowPlaying?.track?.uri, displayItems, findPlayingIndex])
+  }, [emblaApi, nowPlaying?.context?.uri, nowPlaying?.track?.uri, displayItems, findPlayingIndex, pendingItem])
 
-  // Reinitialize carousel when displayItems count changes
+  // Reinitialize when displayItems count changes
   useEffect(() => {
     if (!emblaApi || displayItems.length === 0) return
     
@@ -102,7 +167,6 @@ const Carousel = ({
     isSyncingRef.current = true
     emblaApi.reInit()
     
-    // Scroll to playing item if found, otherwise scroll to selectedIndex
     const scrollTarget = targetIndex !== -1 ? targetIndex : selectedIndex
     if (scrollTarget >= 0 && scrollTarget < displayItems.length) {
       emblaApi.scrollTo(scrollTarget, true)
@@ -112,9 +176,10 @@ const Carousel = ({
     }
     
     setTimeout(() => { isSyncingRef.current = false }, 100)
-  }, [emblaApi, displayItems.length, selectedIndex, nowPlaying?.context?.uri, nowPlaying?.track?.uri, findPlayingIndex])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emblaApi, displayItems.length])
 
-  // Long press handlers for delete mode
+  // Long press for delete mode
   const handlePressStart = (item) => {
     if (item.isTemp) return
     longPressTimerRef.current = setTimeout(() => {
@@ -123,34 +188,20 @@ const Carousel = ({
   }
 
   const handlePressEnd = () => {
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current)
-      longPressTimerRef.current = null
-    }
-  }
-
-  // Handle slide click
-  const handleSlideClick = (index) => {
-    if (!emblaApi) return
-    emblaApi.scrollTo(index)
-    const item = displayItemsRef.current[index]
-    onSlideClick(item, index)
+    clearTimeout(longPressTimerRef.current)
   }
 
   // Render album cover
   const renderCover = (item) => {
-    const isItemPlaylist = item.uri?.includes('playlist') || item.type === 'playlist'
-    
-    if (isItemPlaylist) {
+    if (item.uri?.includes('playlist') || item.type === 'playlist') {
       const covers = item.images || []
       return (
         <div className="composite-cover">
           {[0, 1, 2, 3].map((i) => {
             const img = covers[i]
-            if (img) {
-              return <img key={i} src={getImageUrl(img)} alt="" />
-            }
-            return <div key={i} className="composite-empty" />
+            return img 
+              ? <img key={i} src={getImageUrl(img)} alt="" />
+              : <div key={i} className="composite-empty" />
           })}
         </div>
       )
@@ -177,7 +228,6 @@ const Carousel = ({
               <div 
                 key={item.id} 
                 className={`embla__slide ${index === selectedIndex ? 'is-selected' : ''} ${item.isTemp ? 'is-temp' : ''} ${isPlayingPaused ? 'is-playing-paused' : ''} ${isInDeleteMode ? 'is-delete-mode' : ''}`}
-                onClick={() => !isInDeleteMode && handleSlideClick(index)}
                 onPointerDown={() => handlePressStart(item)}
                 onPointerUp={handlePressEnd}
                 onPointerLeave={handlePressEnd}
@@ -211,7 +261,7 @@ const Carousel = ({
                       )}
                     </button>
                   )}
-                  {/* Delete button for catalog items in delete mode */}
+                  {/* Delete button */}
                   {isInDeleteMode && (
                     <button 
                       className="cover-delete-btn"
@@ -242,4 +292,3 @@ const Carousel = ({
 }
 
 export default Carousel
-

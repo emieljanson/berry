@@ -25,6 +25,7 @@ function App() {
   const [deleting, setDeleting] = useState(false)
   const [toast, setToast] = useState(null)
   const [isScreenOff, setIsScreenOff] = useState(false)
+  const [pendingItem, setPendingItem] = useState(null)
   
   const suppressUntilPlayRef = useRef(false)
   const toastTimeoutRef = useRef(null)
@@ -68,6 +69,7 @@ function App() {
           suppressUntilPlayRef.current = true
           setNowPlaying(null)
           setTempItem(null)
+          setPendingItem(null)
           return
         }
         
@@ -79,7 +81,12 @@ function App() {
       }
     }
 
-    const cleanup = createWebSocket(handleMessage)
+    const handleReconnect = () => {
+      // Clear pending item on reconnect to force carousel sync
+      setPendingItem(null)
+    }
+
+    const cleanup = createWebSocket(handleMessage, handleReconnect)
     return cleanup
   }, [])
 
@@ -213,7 +220,14 @@ function App() {
     return position < 10000 ? api.prev() : api.seek(0)
   }
   
-  const togglePlayPause = () => {
+  const togglePlayPause = useCallback(() => {
+    if (pendingItem) {
+      // There's a pending item from swipe - play it directly (no delay)
+      selectAndPlay(pendingItem)
+      setPendingItem(null)
+      return
+    }
+    
     if (nowPlaying?.playing) {
       return pause()
     } else if (nowPlaying?.paused) {
@@ -225,7 +239,7 @@ function App() {
         return selectAndPlay(selectedItem)
       }
     }
-  }
+  }, [pendingItem, nowPlaying?.playing, nowPlaying?.paused, displayItems, selectedIndex, selectAndPlay])
 
   // Save context to catalog
   const saveContext = async () => {
@@ -373,7 +387,6 @@ function App() {
             selectedIndex={selectedIndex}
             setSelectedIndex={setSelectedIndex}
             nowPlaying={nowPlaying}
-            tempItem={tempItem}
             deleteMode={deleteMode}
             setDeleteMode={setDeleteMode}
             deleting={deleting}
@@ -381,13 +394,21 @@ function App() {
             onSlideClick={onSlideClick}
             onSaveContext={saveContext}
             onDeleteItem={deleteFromCatalog}
+            onTogglePlayPause={togglePlayPause}
             isItemPlaying={isItemPlaying}
             findPlayingIndex={findPlayingIndex}
+            pendingItem={pendingItem}
+            setPendingItem={setPendingItem}
           />
 
-          {/* Track Info */}
+          {/* Track Info - show pending item info if swiping, otherwise nowPlaying */}
           <div className="track-info">
-            {track ? (
+            {pendingItem ? (
+              <>
+                <h2 className="track-name">{pendingItem.name || 'Loading...'}</h2>
+                <p className="artist-name">{pendingItem.artist || ''}</p>
+              </>
+            ) : track ? (
               <>
                 <h2 className="track-name">{track.name}</h2>
                 <p className="artist-name">{track.artist}</p>
@@ -401,10 +422,10 @@ function App() {
           </div>
 
           <ProgressBar 
-            progress={progress}
-            shouldAnimate={shouldAnimate}
-            currentTime={currentTime}
-            totalTime={totalTime}
+            progress={pendingItem ? 0 : progress}
+            shouldAnimate={pendingItem ? false : shouldAnimate}
+            currentTime={pendingItem ? '0:00' : currentTime}
+            totalTime={pendingItem ? '0:00' : totalTime}
           />
 
           <PlaybackControls 
