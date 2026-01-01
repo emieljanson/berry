@@ -3,6 +3,15 @@ import useEmblaCarousel from 'embla-carousel-react'
 import { api, WS_URL, getImageUrl } from './api'
 import './App.css'
 
+// Toast messages
+const TOAST = {
+  PLAY_FAILED: 'Kan niet afspelen',
+  UNAVAILABLE: 'Niet beschikbaar op dit account',
+  OFFLINE: 'Geen verbinding',
+  SAVE_FAILED: 'Opslaan mislukt',
+  DELETE_FAILED: 'Verwijderen mislukt'
+}
+
 // Format milliseconds to mm:ss
 const formatTime = (ms) => {
   if (!ms) return '0:00'
@@ -94,8 +103,19 @@ function App() {
   const [tempItem, setTempItem] = useState(null)
   const [deleteMode, setDeleteMode] = useState(null) // item id in delete mode
   const [deleting, setDeleting] = useState(false)
+  const [toast, setToast] = useState(null) // { message, visible }
   const longPressTimerRef = useRef(null)
   const suppressUntilPlayRef = useRef(false) // Suppress WebSocket updates until user plays something
+  const toastTimeoutRef = useRef(null)
+
+  // Show toast notification
+  const showToast = useCallback((message) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current)
+    setToast({ message, visible: true })
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast(prev => prev ? { ...prev, visible: false } : null)
+    }, 4000)
+  }, [])
 
   // Embla carousel
   const [emblaRef, emblaApi] = useEmblaCarousel({
@@ -129,6 +149,7 @@ function App() {
   useEffect(() => {
     let ws = null
     let reconnectTimeout = null
+    let offlineTimeout = null
     
     function connect() {
       console.log('🔌 Connecting to WebSocket...')
@@ -136,6 +157,10 @@ function App() {
       
       ws.onopen = () => {
         console.log('✅ WebSocket connected')
+        if (offlineTimeout) {
+          clearTimeout(offlineTimeout)
+          offlineTimeout = null
+        }
       }
       
       ws.onmessage = (event) => {
@@ -164,6 +189,8 @@ function App() {
       ws.onclose = () => {
         console.log('WebSocket closed, reconnecting in 1s...')
         reconnectTimeout = setTimeout(connect, 1000)
+        // Show offline toast after 5 seconds of disconnect
+        offlineTimeout = setTimeout(() => showToast(TOAST.OFFLINE), 5000)
       }
       
       ws.onerror = (err) => {
@@ -176,9 +203,10 @@ function App() {
     
     return () => {
       if (reconnectTimeout) clearTimeout(reconnectTimeout)
+      if (offlineTimeout) clearTimeout(offlineTimeout)
       if (ws) ws.close()
     }
-  }, [])
+  }, [showToast])
 
   // Create displayItems: catalog items + optional temp item
   const displayItems = tempItem 
@@ -335,11 +363,19 @@ function App() {
     
     try {
       const result = await api.play(item.uri)
-      if (!result.success) console.warn('Play failed:', result.reason)
+      if (!result.success) {
+        // Check if it's an availability issue (audiobooks, geo-restricted)
+        if (result.reason === 'unavailable') {
+          showToast(TOAST.UNAVAILABLE)
+        } else {
+          showToast(TOAST.PLAY_FAILED)
+        }
+      }
     } catch (err) {
       console.error('Error playing:', err)
+      showToast(TOAST.PLAY_FAILED)
     }
-  }, [isItemPlaying])
+  }, [isItemPlaying, showToast])
 
   // Handle settle (carousel stops) - play selected item
   const onSettle = useCallback(() => {
@@ -457,6 +493,7 @@ function App() {
       }
     } catch (err) {
       console.error('Error saving:', err)
+      showToast(TOAST.SAVE_FAILED)
     }
     
     setSaving(false)
@@ -491,6 +528,7 @@ function App() {
       }
     } catch (err) {
       console.error('Error deleting:', err)
+      showToast(TOAST.DELETE_FAILED)
     }
     setDeleting(false)
   }
@@ -561,6 +599,13 @@ function App() {
 
   return (
     <div className="app" onClick={handleAppClick}>
+      {/* Toast notification */}
+      {toast && (
+        <div className={`toast ${toast.visible ? 'visible' : ''}`}>
+          {toast.message}
+        </div>
+      )}
+      
       {displayItems.length > 0 ? (
         <>
           {/* Carousel */}

@@ -652,7 +652,9 @@ app.post('/api/play', async (req, res) => {
     if (!response.ok) {
       console.log(`❌ Play request failed: ${response.status}`);
       playingEventListeners = playingEventListeners.filter(l => l.contextUri !== uri);
-      return res.json({ success: false, context: uri, reason: 'request_failed' });
+      // 403/404 often means content not available for this account
+      const reason = (response.status === 403 || response.status === 404) ? 'unavailable' : 'request_failed';
+      return res.json({ success: false, context: uri, reason });
     }
     
     // Wait for confirmation (playing event or timeout)
