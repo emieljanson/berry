@@ -25,6 +25,12 @@ export const api = {
   
   saveToCatalog: (item) => 
     post('/api/catalog', item).then(r => r.json()),
+  
+  deleteFromCatalog: (id) =>
+    fetch(`${API_URL}/api/catalog/${id}`, { method: 'DELETE' }).then(r => r.json()),
+  
+  cleanupImages: () =>
+    post('/api/cleanup-images').then(r => r.json()),
 
   // Playback
   play: (uri) => 
@@ -42,4 +48,5 @@ export const api = {
 // Image URL helper
 export const getImageUrl = (path) => 
   path?.startsWith('/') ? `${API_URL}${path}` : path
+
 

@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
+import { readFile, writeFile, mkdir, readdir, unlink } from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import WebSocket, { WebSocketServer } from 'ws';
@@ -1032,12 +1032,103 @@ app.delete('/api/catalog/:id', async (req, res) => {
     const removed = catalog.items.splice(index, 1)[0];
     await saveCatalog(catalog);
     
-    // Progress is stored in the catalog item itself, so it's automatically removed
+    // Pause playback
+    try {
+      await fetch(`${LIBRESPOT_URL}/player/pause`, { method: 'POST' });
+    } catch (e) {
+      // Ignore pause errors
+    }
+    
+    // Clear the backend state
+    currentState.contextUri = null;
+    currentState.trackUri = null;
+    currentState.intendedContextUri = null;
+    currentState.playOrigin = null;
+    
+    // Broadcast a "cleared" state to all frontends
+    const clearedState = {
+      playing: false,
+      paused: false,
+      stopped: true,
+      cleared: true,  // Special flag to indicate intentional clear
+      track: null,
+      context: { uri: null },
+      volume: 100
+    };
+    
+    const message = JSON.stringify(clearedState);
+    frontendClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+    
     console.log(`🗑️ Removed from catalog: ${removed.name}`);
     res.json({ success: true, removed });
   } catch (error) {
     console.error('Error removing from catalog:', error.message);
     res.status(500).json({ error: 'Could not remove from catalog' });
+  }
+});
+
+// Cleanup unused images (garbage collection)
+app.post('/api/cleanup-images', async (req, res) => {
+  try {
+    const catalog = await loadCatalog();
+    
+    // Collect all images that are in use
+    const usedImages = new Set();
+    
+    for (const item of catalog.items) {
+      // Single image (albums)
+      if (item.image && item.image.startsWith('/images/')) {
+        usedImages.add(item.image.replace('/images/', ''));
+      }
+      // Multiple images (playlists)
+      if (item.images && Array.isArray(item.images)) {
+        for (const img of item.images) {
+          if (img && img.startsWith('/images/')) {
+            usedImages.add(img.replace('/images/', ''));
+          }
+        }
+      }
+    }
+    
+    // Get all files in images directory
+    const allFiles = await readdir(IMAGES_PATH);
+    
+    // Find unused files
+    const unusedFiles = allFiles.filter(file => !usedImages.has(file));
+    
+    // Delete unused files
+    let deleted = 0;
+    for (const file of unusedFiles) {
+      try {
+        await unlink(join(IMAGES_PATH, file));
+        deleted++;
+        
+        // Also remove from savedImageHashes if present
+        for (const [hash, path] of savedImageHashes.entries()) {
+          if (path === `/images/${file}`) {
+            savedImageHashes.delete(hash);
+            break;
+          }
+        }
+      } catch (err) {
+        console.error(`Error deleting ${file}:`, err.message);
+      }
+    }
+    
+    console.log(`🧹 Cleanup: ${deleted} unused images deleted, ${usedImages.size} in use`);
+    res.json({ 
+      success: true, 
+      deleted, 
+      kept: usedImages.size,
+      totalBefore: allFiles.length 
+    });
+  } catch (error) {
+    console.error('Error cleaning up images:', error.message);
+    res.status(500).json({ error: 'Could not cleanup images' });
   }
 });
 

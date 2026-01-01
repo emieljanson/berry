@@ -92,6 +92,10 @@ function App() {
   const [saving, setSaving] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [tempItem, setTempItem] = useState(null)
+  const [deleteMode, setDeleteMode] = useState(null) // item id in delete mode
+  const [deleting, setDeleting] = useState(false)
+  const longPressTimerRef = useRef(null)
+  const suppressUntilPlayRef = useRef(false) // Suppress WebSocket updates until user plays something
 
   // Embla carousel
   const [emblaRef, emblaApi] = useEmblaCarousel({
@@ -137,6 +141,20 @@ function App() {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
+          
+          // If we receive a "cleared" state from backend (after delete)
+          if (data.cleared) {
+            suppressUntilPlayRef.current = true
+            setNowPlaying(null)
+            setTempItem(null)
+            return
+          }
+          
+          // If suppressed, ignore updates until user plays something
+          if (suppressUntilPlayRef.current) {
+            return
+          }
+          
           setNowPlaying(data)
         } catch (err) {
           console.error('Error parsing WebSocket message:', err)
@@ -312,6 +330,9 @@ function App() {
     // Clear tempItem when selecting a catalog item
     if (!item.isTemp) setTempItem(null)
     
+    // Re-enable WebSocket updates (was suppressed after delete)
+    suppressUntilPlayRef.current = false
+    
     try {
       const result = await api.play(item.uri)
       if (!result.success) console.warn('Play failed:', result.reason)
@@ -384,6 +405,8 @@ function App() {
     if (nowPlaying?.playing) {
       return pause()
     } else if (nowPlaying?.paused) {
+      // Re-enable WebSocket updates when resuming
+      suppressUntilPlayRef.current = false
       return resume()
     } else {
       const selectedItem = displayItems[selectedIndex]
@@ -439,6 +462,61 @@ function App() {
     setSaving(false)
   }
 
+  // Delete item from catalog
+  const deleteFromCatalog = async (itemId) => {
+    setDeleting(true)
+    try {
+      // Find the index of the item being deleted
+      const deleteIndex = displayItems.findIndex(item => item.id === itemId)
+      
+      // Delete the item - backend handles pause + clear state + broadcast
+      const result = await api.deleteFromCatalog(itemId)
+      if (result.success) {
+        // Refresh catalog
+        const data = await api.getCatalog()
+        const filteredItems = (data.items || []).filter(item => item.type !== 'track')
+        setCatalog({ ...data, items: filteredItems })
+        setDeleteMode(null)
+        
+        // Navigate to next item (or previous if deleting last)
+        if (filteredItems.length > 0 && emblaApi) {
+          const newIndex = deleteIndex >= filteredItems.length 
+            ? filteredItems.length - 1 
+            : deleteIndex
+          setTimeout(() => {
+            emblaApi.scrollTo(newIndex, true)
+            setSelectedIndex(newIndex)
+          }, 50)
+        }
+      }
+    } catch (err) {
+      console.error('Error deleting:', err)
+    }
+    setDeleting(false)
+  }
+
+  // Long press handlers for delete mode
+  const handlePressStart = (item) => {
+    if (item.isTemp) return // Can't delete temp items
+    longPressTimerRef.current = setTimeout(() => {
+      setDeleteMode(item.id)
+    }, 1000) // 1 second long press
+  }
+
+  const handlePressEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
+  }
+
+  // Cancel delete mode when clicking elsewhere (not on the slide itself or delete button)
+  const handleAppClick = (e) => {
+    if (deleteMode && !e.target.closest('.cover-delete-btn') && !e.target.closest('.embla__slide')) {
+      setDeleteMode(null)
+    }
+  }
+
   // Derived state
   const track = nowPlaying?.track
   const isPlaying = nowPlaying?.playing && !!track
@@ -482,7 +560,7 @@ function App() {
   }
 
   return (
-    <div className="app">
+    <div className="app" onClick={handleAppClick}>
       {displayItems.length > 0 ? (
         <>
           {/* Carousel */}
@@ -491,11 +569,16 @@ function App() {
               <div className="embla__container">
                 {displayItems.map((item, index) => {
                   const isPlayingPaused = isItemPlaying(item) && isPaused
+                  const isInDeleteMode = deleteMode === item.id
                   return (
                   <div 
                     key={item.id} 
-                    className={`embla__slide ${index === selectedIndex ? 'is-selected' : ''} ${item.isTemp ? 'is-temp' : ''} ${isPlayingPaused ? 'is-playing-paused' : ''}`}
-                    onClick={() => onSlideClick(index)}
+                    className={`embla__slide ${index === selectedIndex ? 'is-selected' : ''} ${item.isTemp ? 'is-temp' : ''} ${isPlayingPaused ? 'is-playing-paused' : ''} ${isInDeleteMode ? 'is-delete-mode' : ''}`}
+                    onClick={() => !isInDeleteMode && onSlideClick(index)}
+                    onPointerDown={() => handlePressStart(item)}
+                    onPointerUp={handlePressEnd}
+                    onPointerLeave={handlePressEnd}
+                    onPointerCancel={handlePressEnd}
                   >
                     <div className="slide-content">
                       {renderCover(item)}
@@ -504,6 +587,7 @@ function App() {
                           <div className="buffering-spinner" />
                         </div>
                       )}
+                      {/* Save button for temp items */}
                       {item.isTemp && (
                         <button 
                           className="cover-save-btn"
@@ -519,6 +603,26 @@ function App() {
                           ) : (
                             <svg viewBox="0 0 24 24" fill="currentColor">
                               <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                            </svg>
+                          )}
+                        </button>
+                      )}
+                      {/* Delete button for catalog items in delete mode */}
+                      {isInDeleteMode && (
+                        <button 
+                          className="cover-delete-btn"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            deleteFromCatalog(item.id)
+                          }}
+                          disabled={deleting}
+                          aria-label="Verwijderen uit catalogus"
+                        >
+                          {deleting ? (
+                            <div className="save-spinner" />
+                          ) : (
+                            <svg viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M19 13H5v-2h14v2z"/>
                             </svg>
                           )}
                         </button>
