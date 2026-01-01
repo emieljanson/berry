@@ -45,6 +45,13 @@ function App() {
     }, 4000)
   }, [])
 
+  // Refresh catalog from server
+  const refreshCatalog = useCallback(async () => {
+    const data = await api.getCatalog()
+    const filteredItems = (data.items || []).filter(item => item.type !== 'track')
+    setCatalog({ ...data, items: filteredItems })
+  }, [])
+
   // Fetch catalog periodically
   useEffect(() => {
     const fetchCatalog = async () => {
@@ -133,8 +140,6 @@ function App() {
   }, [selectAndPlay, isItemPlaying, nowPlaying?.playing])
 
   // Player controls
-  const pause = () => api.pause()
-  const resume = () => api.resume()
   const next = () => api.next()
   
   const prev = () => {
@@ -144,17 +149,16 @@ function App() {
   
   const togglePlayPause = useCallback(() => {
     if (pendingItem) {
-      // There's a pending item from swipe - play it directly (no delay)
       selectAndPlay(pendingItem)
       setPendingItem(null)
       return
     }
     
     if (nowPlaying?.playing) {
-      return pause()
+      return api.pause()
     } else if (nowPlaying?.paused) {
       suppressUntilPlayRef.current = false
-      return resume()
+      return api.resume()
     } else {
       const selectedItem = displayItems[selectedIndex]
       if (selectedItem) {
@@ -184,9 +188,7 @@ function App() {
       })
       
       if (data.success) {
-        const catalogData = await api.getCatalog()
-        const filteredItems = (catalogData.items || []).filter(item => item.type !== 'track')
-        setCatalog({ ...catalogData, items: filteredItems })
+        await refreshCatalog()
       }
     } catch (err) {
       console.error('Error saving:', err)
@@ -204,15 +206,12 @@ function App() {
       
       const result = await api.deleteFromCatalog(itemId)
       if (result.success) {
-        const data = await api.getCatalog()
-        const filteredItems = (data.items || []).filter(item => item.type !== 'track')
-        setCatalog({ ...data, items: filteredItems })
+        await refreshCatalog()
         setDeleteMode(null)
         
-        if (filteredItems.length > 0) {
-          const newIndex = deleteIndex >= filteredItems.length 
-            ? filteredItems.length - 1 
-            : deleteIndex
+        const newLength = catalog.items.length - 1
+        if (newLength > 0) {
+          const newIndex = deleteIndex >= newLength ? newLength - 1 : deleteIndex
           setSelectedIndex(newIndex)
         }
       }
@@ -233,7 +232,6 @@ function App() {
   // Derived state
   const track = nowPlaying?.track
   const isPlaying = nowPlaying?.playing && !!track
-  const isPaused = nowPlaying?.paused
   
   // Progress bar animation
   const { progress, shouldAnimate, currentTime, totalTime } = useProgressAnimation(track, isPlaying)
