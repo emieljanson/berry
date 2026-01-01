@@ -1,0 +1,9 @@
+# Berry boot config additions
+# Add these lines to /boot/config.txt
+
+# Disable rainbow splash at boot
+disable_splash=1
+
+# Hide boot text
+consoleblank=0
+

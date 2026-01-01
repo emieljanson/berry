@@ -1,0 +1,16 @@
+[Unit]
+Description=Berry go-librespot Spotify Connect
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+ExecStart=/usr/local/bin/go-librespot --config_dir /home/admin/.config/go-librespot
+Restart=always
+RestartSec=5
+Environment=HOME=/home/admin
+
+[Install]
+WantedBy=multi-user.target
+

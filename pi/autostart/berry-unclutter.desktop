@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Hide Cursor
+Comment=Hide mouse cursor for touchscreen
+Exec=/usr/bin/unclutter -idle 0 -root
+Terminal=false
+X-GNOME-Autostart-enabled=true
+

@@ -1,0 +1,19 @@
+[Unit]
+Description=Berry Backend API
+After=network-online.target berry-librespot.service
+Wants=network-online.target
+Requires=berry-librespot.service
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/berry/backend
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=HOME=/home/admin
+
+[Install]
+WantedBy=multi-user.target
+

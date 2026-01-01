@@ -1,2 +1,23 @@
+# macOS
+.DS_Store
+
+# IDE
+.cursor/
+.vscode/
+
+# Dependencies
+node_modules/
+
+# Build output
+frontend/dist/
+frontend/.vite/
+
+# Local data (per-device, don't sync)
+backend/data/
+
+# Logs
+*.log
+berry-update.log
+
+# Misc
 /Berry
-.cursor/debug.log

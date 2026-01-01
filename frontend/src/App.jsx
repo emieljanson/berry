@@ -93,6 +93,9 @@ function App() {
   const longPressTimerRef = useRef(null)
   const suppressUntilPlayRef = useRef(false) // Suppress WebSocket updates until user plays something
   const toastTimeoutRef = useRef(null)
+  const sleepTimerRef = useRef(null)
+  const isPlayingRef = useRef(false) // Track playing state for sleep timer
+  const [isScreenOff, setIsScreenOff] = useState(false)
 
   // Show toast notification
   const showToast = useCallback((message) => {
@@ -553,6 +556,59 @@ function App() {
     }
   }
 
+  // Sleep mode - screen off after inactivity (when not playing)
+  const isScreenOffRef = useRef(false)
+  
+  useEffect(() => {
+    const wakeUp = () => {
+      if (isScreenOffRef.current) {
+        isScreenOffRef.current = false
+        setIsScreenOff(false)
+        api.screenOn()
+      }
+    }
+
+    const startSleepTimer = () => {
+      clearTimeout(sleepTimerRef.current)
+      sleepTimerRef.current = setTimeout(() => {
+        if (!isPlayingRef.current && !isScreenOffRef.current) {
+          isScreenOffRef.current = true
+          setIsScreenOff(true)
+          api.screenOff()
+        }
+      }, 2 * 60 * 1000) // 2 minutes
+    }
+
+    const handleActivity = () => {
+      wakeUp()
+      startSleepTimer()
+    }
+
+    window.addEventListener('touchstart', handleActivity)
+    window.addEventListener('mousedown', handleActivity)
+    startSleepTimer()
+
+    return () => {
+      window.removeEventListener('touchstart', handleActivity)
+      window.removeEventListener('mousedown', handleActivity)
+      clearTimeout(sleepTimerRef.current)
+    }
+  }, [])
+
+  // Keep playing ref in sync
+  useEffect(() => {
+    isPlayingRef.current = nowPlaying?.playing || false
+  }, [nowPlaying?.playing])
+
+  // Wake when music starts
+  useEffect(() => {
+    if (nowPlaying?.playing && isScreenOffRef.current) {
+      isScreenOffRef.current = false
+      setIsScreenOff(false)
+      api.screenOn()
+    }
+  }, [nowPlaying?.playing])
+
   // Derived state
   const track = nowPlaying?.track
   const isPlaying = nowPlaying?.playing && !!track
@@ -597,6 +653,9 @@ function App() {
 
   return (
     <div className="app" onClick={handleAppClick}>
+      {/* Sleep overlay - fades to black when inactive */}
+      <div className={`sleep-overlay ${isScreenOff ? 'active' : ''}`} />
+      
       {/* Toast notification */}
       {toast && (
         <div className={`toast ${toast.visible ? 'visible' : ''}`}>

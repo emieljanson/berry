@@ -43,6 +43,10 @@ export const api = {
   
   seek: (position) => 
     post('/api/seek', { position }),
+
+  // Screen control
+  screenOff: () => post('/api/screen/off'),
+  screenOn: () => post('/api/screen/on'),
 }
 
 // Image URL helper

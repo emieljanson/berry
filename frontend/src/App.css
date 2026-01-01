@@ -55,6 +55,28 @@
   opacity: 1;
 }
 
+/* ==========================================
+   Sleep Overlay
+   ========================================== */
+
+.sleep-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: black;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 1s ease;
+  z-index: 999;
+}
+
+.sleep-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 html, body {
   overflow: hidden;
   touch-action: pan-y;

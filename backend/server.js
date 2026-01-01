@@ -1146,6 +1146,36 @@ app.post('/api/cleanup-images', async (req, res) => {
 app.use('/images', express.static(IMAGES_PATH));
 
 // ============================================
+// Screen Control (Raspberry Pi backlight)
+// ============================================
+
+const BACKLIGHT_PATH = '/sys/class/backlight/rpi_backlight/bl_power';
+
+app.post('/api/screen/off', async (req, res) => {
+  try {
+    await writeFile(BACKLIGHT_PATH, '1'); // 1 = off
+    console.log('📴 Screen off');
+    res.json({ success: true });
+  } catch (error) {
+    // Silently fail on non-Pi systems
+    console.log('Screen control not available (not on Pi)');
+    res.json({ success: true });
+  }
+});
+
+app.post('/api/screen/on', async (req, res) => {
+  try {
+    await writeFile(BACKLIGHT_PATH, '0'); // 0 = on
+    console.log('📱 Screen on');
+    res.json({ success: true });
+  } catch (error) {
+    // Silently fail on non-Pi systems
+    console.log('Screen control not available (not on Pi)');
+    res.json({ success: true });
+  }
+});
+
+// ============================================
 // Start server
 // ============================================
 
