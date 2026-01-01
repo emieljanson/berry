@@ -5,6 +5,7 @@ import { PlaybackControls, ProgressBar, useProgressAnimation } from './component
 import Toast from './components/Toast'
 import SleepOverlay from './components/SleepOverlay'
 import { useSleepMode } from './hooks/useSleepMode'
+import { useTempItem } from './hooks/useTempItem'
 import './App.css'
 
 // Toast messages
@@ -21,7 +22,6 @@ function App() {
   const [nowPlaying, setNowPlaying] = useState(null)
   const [saving, setSaving] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(0)
-  const [tempItem, setTempItem] = useState(null)
   const [deleteMode, setDeleteMode] = useState(null)
   const [deleting, setDeleting] = useState(false)
   const [toast, setToast] = useState(null)
@@ -32,6 +32,9 @@ function App() {
   
   // Sleep mode - screen off after inactivity when not playing
   const isScreenOff = useSleepMode(nowPlaying?.playing)
+  
+  // Temp item for music not in catalog
+  const { tempItem, displayItems, findPlayingIndex } = useTempItem(catalog.items, nowPlaying)
 
   // Show toast notification
   const showToast = useCallback((message) => {
@@ -68,7 +71,6 @@ function App() {
         if (data.cleared) {
           suppressUntilPlayRef.current = true
           setNowPlaying(null)
-          setTempItem(null)
           setPendingItem(null)
           return
         }
@@ -90,85 +92,6 @@ function App() {
     return cleanup
   }, [])
 
-  // Create displayItems: catalog items + optional temp item
-  const displayItems = tempItem 
-    ? [...catalog.items, tempItem]
-    : catalog.items
-
-  // Helper: find a catalog item that matches the current playback
-  const findMatchingCatalogItem = useCallback((contextUri, trackUri) => {
-    let match = catalog.items.find(item => item.uri === contextUri)
-    if (!match && trackUri) {
-      match = catalog.items.find(item => item.currentTrack?.uri === trackUri)
-    }
-    return match
-  }, [catalog.items])
-
-  // Manage tempItem: create when playing something not in catalog
-  useEffect(() => {
-    const contextUri = nowPlaying?.context?.uri
-    const trackUri = nowPlaying?.track?.uri
-    
-    if (!contextUri && !trackUri) {
-      setTempItem(null)
-      return
-    }
-    
-    const matchedItem = findMatchingCatalogItem(contextUri, trackUri)
-    
-    if (matchedItem) {
-      setTempItem(null)
-      return
-    }
-    
-    if (contextUri) {
-      const isPlaylist = contextUri.includes('playlist')
-      const track = nowPlaying.track
-      const contextCovers = nowPlaying.context?.covers || []
-      
-      setTempItem(prevTempItem => {
-        const newTempItem = {
-          id: 'temp',
-          type: isPlaylist ? 'playlist' : 'album',
-          uri: contextUri,
-          name: track ? (isPlaylist ? 'Playlist' : track.album) : 'Loading...',
-          artist: track?.artist || '',
-          image: track?.albumCover || null,
-          images: isPlaylist ? contextCovers : null,
-          isTemp: true
-        }
-        
-        if (!prevTempItem || 
-            prevTempItem.uri !== newTempItem.uri ||
-            prevTempItem.name !== newTempItem.name ||
-            prevTempItem.artist !== newTempItem.artist ||
-            prevTempItem.image !== newTempItem.image ||
-            (prevTempItem.images?.length || 0) !== (newTempItem.images?.length || 0)) {
-          return newTempItem
-        }
-        
-        return prevTempItem
-      })
-    }
-  }, [nowPlaying?.context?.uri, nowPlaying?.track?.uri, nowPlaying?.context?.covers, nowPlaying?.track?.album, nowPlaying?.track?.artist, nowPlaying?.track?.albumCover, findMatchingCatalogItem])
-
-  // Helper: find index of item matching the current playback
-  const findPlayingIndex = useCallback((items, contextUri, trackUri) => {
-    if (!contextUri && !trackUri) return -1
-    
-    let index = items.findIndex(item => item.uri === contextUri)
-    
-    if (index === -1 && trackUri) {
-      index = items.findIndex(item => item.currentTrack?.uri === trackUri)
-    }
-    
-    if (index === -1 && tempItem && (tempItem.uri === contextUri || tempItem.uri === trackUri)) {
-      index = items.length - 1
-    }
-    
-    return index
-  }, [tempItem])
-
   // Check if an item is currently playing
   const isItemPlaying = useCallback((item) => {
     return item?.uri === nowPlaying?.context?.uri
@@ -178,7 +101,6 @@ function App() {
   const selectAndPlay = useCallback(async (item) => {
     if (!item || isItemPlaying(item)) return
     
-    if (!item.isTemp) setTempItem(null)
     suppressUntilPlayRef.current = false
     
     try {
@@ -265,7 +187,6 @@ function App() {
         const catalogData = await api.getCatalog()
         const filteredItems = (catalogData.items || []).filter(item => item.type !== 'track')
         setCatalog({ ...catalogData, items: filteredItems })
-        setTempItem(null)
       }
     } catch (err) {
       console.error('Error saving:', err)
