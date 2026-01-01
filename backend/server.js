@@ -1072,7 +1072,7 @@ app.delete('/api/catalog/:id', async (req, res) => {
 });
 
 // Cleanup unused images (garbage collection)
-app.post('/api/cleanup-images', async (req, res) => {
+async function cleanupUnusedImages() {
   try {
     const catalog = await loadCatalog();
     
@@ -1119,16 +1119,24 @@ app.post('/api/cleanup-images', async (req, res) => {
       }
     }
     
-    console.log(`🧹 Cleanup: ${deleted} unused images deleted, ${usedImages.size} in use`);
-    res.json({ 
-      success: true, 
-      deleted, 
-      kept: usedImages.size,
-      totalBefore: allFiles.length 
-    });
+    if (deleted > 0) {
+      console.log(`🧹 Cleanup: ${deleted} unused images deleted, ${usedImages.size} in use`);
+    }
+    
+    return { deleted, kept: usedImages.size, totalBefore: allFiles.length };
   } catch (error) {
     console.error('Error cleaning up images:', error.message);
+    return { deleted: 0, kept: 0, totalBefore: 0, error: error.message };
+  }
+}
+
+// API endpoint for manual cleanup
+app.post('/api/cleanup-images', async (req, res) => {
+  const result = await cleanupUnusedImages();
+  if (result.error) {
     res.status(500).json({ error: 'Could not cleanup images' });
+  } else {
+    res.json({ success: true, ...result });
   }
 });
 
@@ -1139,10 +1147,16 @@ app.use('/images', express.static(IMAGES_PATH));
 // Start server
 // ============================================
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🍓 Berry backend running on http://localhost:${PORT}`);
   console.log(`   Connecting to go-librespot at ${LIBRESPOT_URL}`);
   
   // Start WebSocket server for frontend clients
   startFrontendWebSocket();
+  
+  // Run image cleanup on startup
+  await cleanupUnusedImages();
+  
+  // Schedule cleanup every 24 hours
+  setInterval(cleanupUnusedImages, 24 * 60 * 60 * 1000);
 });
