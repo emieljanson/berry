@@ -20,6 +20,41 @@ const LIBRESPOT_WS = 'ws://localhost:3678/events';
 
 const frontendClients = new Set();
 
+// Try to find context from catalog based on track info
+async function findContextFromCatalog(trackUri, albumName) {
+  if (!trackUri && !albumName) return null;
+  
+  try {
+    const catalog = await loadCatalog();
+    
+    // First try: match by currentTrack.uri (saved progress)
+    if (trackUri) {
+      const matchByTrack = catalog.items.find(item => item.currentTrack?.uri === trackUri);
+      if (matchByTrack) {
+        console.log(`🔍 Found context from saved progress: ${matchByTrack.name}`);
+        return matchByTrack.uri;
+      }
+    }
+    
+    // Second try: match by album name (for albums)
+    if (albumName) {
+      const matchByAlbum = catalog.items.find(item => 
+        item.type === 'album' && 
+        (item.album === albumName || item.name === albumName)
+      );
+      if (matchByAlbum) {
+        console.log(`🔍 Found context from album name: ${matchByAlbum.name}`);
+        return matchByAlbum.uri;
+      }
+    }
+    
+    return null;
+  } catch (err) {
+    console.error('Error finding context from catalog:', err.message);
+    return null;
+  }
+}
+
 // Get current state for broadcasting to frontends
 async function getCurrentState() {
   try {
@@ -46,10 +81,20 @@ async function getCurrentState() {
       position: status.track.position
     } : null;
     
+    // Try to recover context if we don't have it
+    let contextUri = currentState.intendedContextUri || currentState.contextUri;
+    if (!contextUri && trackInfo && !status.stopped) {
+      contextUri = await findContextFromCatalog(trackInfo.uri, trackInfo.album);
+      if (contextUri) {
+        // Update currentState so we don't search every time
+        currentState.contextUri = contextUri;
+      }
+    }
+    
     // Get collected covers for current context (for playlist composite images)
     let covers = null;
-    if (currentState.contextUri && contextCovers.has(currentState.contextUri)) {
-      covers = Array.from(contextCovers.get(currentState.contextUri).values());
+    if (contextUri && contextCovers.has(contextUri)) {
+      covers = Array.from(contextCovers.get(contextUri).values());
     }
     
     return {
@@ -59,8 +104,7 @@ async function getCurrentState() {
       buffering: status.buffering || false,
       track: trackInfo,
       context: {
-        // Use intendedContextUri if set (for resume playback), otherwise use the actual context
-        uri: currentState.intendedContextUri || currentState.contextUri,
+        uri: contextUri,
         playOrigin: currentState.playOrigin,
         covers: covers // Array of local image paths for playlist composite
       },
@@ -160,7 +204,8 @@ const savedImageHashes = new Map(); // hash -> localImagePath
 // ============================================
 
 // Save current playback position to catalog item
-async function saveCurrentPosition(contextUri, trackUri, position) {
+// Now also saves track name and artist for immediate display in UI
+async function saveCurrentPosition(contextUri, trackUri, position, trackName = null, artistName = null) {
   if (!contextUri || !trackUri || position === undefined) return;
   
   try {
@@ -171,6 +216,8 @@ async function saveCurrentPosition(contextUri, trackUri, position) {
       item.currentTrack = {
         uri: trackUri,
         position: position,
+        name: trackName || item.currentTrack?.name || null,
+        artist: artistName || item.currentTrack?.artist || null,
         updatedAt: new Date().toISOString()
       };
       await saveCatalog(catalog);
@@ -233,7 +280,13 @@ async function clearSavedPosition(contextUri) {
 // Periodically save progress (every 10 seconds when playing)
 let lastSavedPosition = 0;
 let lastSavedTrack = null;
+let lastSavedContext = null;
+let savingBlocked = false; // Block saves during context transitions
+
 setInterval(async () => {
+  // Skip saves during context transitions to prevent race conditions
+  if (savingBlocked) return;
+  
   try {
     const response = await fetch(`${LIBRESPOT_URL}/status`);
     if (response.status === 204) return;
@@ -241,23 +294,33 @@ setInterval(async () => {
     const status = await response.json();
     if (status.stopped || status.paused || !status.track) return;
     
+    // Get the context from the status, not from currentState (which might be stale)
+    const contextUri = status.context_uri || currentState.contextUri;
+    if (!contextUri) return;
+    
     const position = status.track.position;
     const trackUri = status.track.uri;
+    const trackName = status.track.name;
+    const artistName = status.track.artist_names?.join(', ') || status.track.artist;
     
-    // Save if track changed OR position changed significantly (> 5 seconds)
+    // Save if track changed OR context changed OR position changed significantly (> 5 seconds)
     const trackChanged = trackUri !== lastSavedTrack;
+    const contextChanged = contextUri !== lastSavedContext;
     const positionChanged = Math.abs(position - lastSavedPosition) > 5000;
     
-    if (trackChanged || positionChanged) {
+    if (trackChanged || contextChanged || positionChanged) {
       const saved = await saveCurrentPosition(
-        currentState.contextUri,
+        contextUri,
         trackUri,
-        position
+        position,
+        trackName,
+        artistName
       );
       if (saved) {
         lastSavedPosition = position;
         lastSavedTrack = trackUri;
-        console.log(`💾 Saved progress: track ${trackUri.split(':').pop().slice(0,8)}... @ ${Math.floor(position / 1000)}s`);
+        lastSavedContext = contextUri;
+        console.log(`💾 [progress] Saved: "${trackName}" @ ${Math.floor(position / 1000)}s`);
       }
     }
   } catch (err) {
@@ -574,6 +637,9 @@ app.post('/api/play', async (req, res) => {
     expectedContextUri = uri;
     lastPlayRequestTime = Date.now();
     
+    // Block periodic saves during context switch to prevent race conditions
+    savingBlocked = true;
+    
     // Save current position before switching context
     if (currentState.contextUri && currentState.contextUri !== uri) {
       try {
@@ -581,12 +647,16 @@ app.post('/api/play', async (req, res) => {
         if (statusRes.ok) {
           const status = await statusRes.json();
           if (status.track && !status.stopped) {
+            const trackName = status.track.name;
+            const artistName = status.track.artist_names?.join(', ') || status.track.artist;
             await saveCurrentPosition(
               currentState.contextUri,
               status.track.uri,
-              status.track.position
+              status.track.position,
+              trackName,
+              artistName
             );
-            console.log(`💾 Saved position before context switch: ${Math.floor(status.track.position / 1000)}s`);
+            console.log(`💾 [switch] Saved: "${trackName}" @ ${Math.floor(status.track.position / 1000)}s`);
           }
         }
       } catch (err) {
@@ -613,55 +683,61 @@ app.post('/api/play', async (req, res) => {
     // Store the intended context URI (the catalog item we want to play)
     currentState.intendedContextUri = uri;
     
-    // Create a promise that resolves when we get a 'playing' event
-    // We need to listen for the context URI OR the track URI
-    const playConfirmation = new Promise((resolve, reject) => {
-      const listener = { contextUri: uri, resolve };
-      playingEventListeners.push(listener);
-      
-      // Timeout after 3 seconds
-      setTimeout(() => {
-        const index = playingEventListeners.indexOf(listener);
-        if (index > -1) {
-          playingEventListeners.splice(index, 1);
-          resolve({ success: false, context: uri, reason: 'timeout' });
-        }
-      }, 3000);
-    });
-    
     // Send play request to go-librespot
     // Use skip_to_uri parameter to start at a specific track within the context
-    const response = await fetch(`${LIBRESPOT_URL}/player/play`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(playBody)
-    });
+    console.log(`📤 Sending play request to go-librespot:`, JSON.stringify(playBody));
     
-    if (!response.ok) {
-      console.log(`❌ Play request failed: ${response.status}`);
-      playingEventListeners = playingEventListeners.filter(l => l.contextUri !== uri);
-      // 403/404 often means content not available for this account
-      const reason = (response.status === 403 || response.status === 404) ? 'unavailable' : 'request_failed';
-      return res.json({ success: false, context: uri, reason });
+    let response;
+    try {
+      response = await fetch(`${LIBRESPOT_URL}/player/play`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(playBody)
+      });
+    } catch (fetchError) {
+      console.log(`❌ Play request failed (network error): ${fetchError.message}`);
+      savingBlocked = false; // Unblock saves on error
+      return res.json({ success: false, context: uri, reason: 'network_error' });
     }
     
-    // Wait for confirmation (playing event or timeout)
-    const result = await playConfirmation;
+    // Log the response details
+    let responseText = '';
+    try {
+      responseText = await response.text();
+    } catch (e) {
+      // ignore
+    }
+    console.log(`📥 go-librespot response: status=${response.status}, body=${responseText || '(empty)'}`);
     
-    if (result.success) {
-      console.log(`✅ Play confirmed for: ${uri}`);
-      
-      // If resuming at a track, seek to the saved position
-      if (isResumingTrack && savedProgress?.position > 0) {
-        console.log(`📍 Seeking to position: ${Math.floor(savedProgress.position / 1000)}s`);
-        await fetch(`${LIBRESPOT_URL}/player/seek`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ position: savedProgress.position })
-        });
-      }
-      
-      // Disable repeat - albums/playlists should stop when finished
+    // Handle error responses honestly - show real errors to the user
+    if (!response.ok) {
+      console.log(`❌ Play request failed: ${response.status}`);
+      savingBlocked = false; // Unblock saves on error
+      const reason = (response.status === 403 || response.status === 404) ? 'unavailable' : 'request_failed';
+      return res.json({ success: false, context: uri, reason, status: response.status });
+    }
+    
+    console.log(`✅ Play request sent for: ${uri}`);
+    
+    // If resuming at a track, seek to the saved position after a brief delay
+    if (isResumingTrack && savedProgress?.position > 0) {
+      // Small delay to let playback start before seeking
+      setTimeout(async () => {
+        try {
+          console.log(`📍 Seeking to position: ${Math.floor(savedProgress.position / 1000)}s`);
+          await fetch(`${LIBRESPOT_URL}/player/seek`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ position: savedProgress.position })
+          });
+        } catch (err) {
+          console.error('Seek failed:', err.message);
+        }
+      }, 500);
+    }
+    
+    // Disable repeat - albums/playlists should stop when finished
+    setTimeout(async () => {
       try {
         await fetch(`${LIBRESPOT_URL}/player/repeat`, {
           method: 'POST',
@@ -671,12 +747,16 @@ app.post('/api/play', async (req, res) => {
       } catch (err) {
         // Ignore repeat mode errors
       }
-    } else {
-      console.log(`⚠️ Play not confirmed (timeout) for: ${uri}`);
-    }
+    }, 100);
     
+    // Unblock saves after context switch has had time to propagate
+    setTimeout(() => {
+      savingBlocked = false;
+    }, 2000);
+    
+    // Return success immediately - WebSocket will notify when playback actually starts
     res.json({ 
-      success: result.success, 
+      success: true, 
       context: uri,
       resumed: isResumingTrack,
       resumedTrack: savedProgress?.uri,
@@ -684,6 +764,7 @@ app.post('/api/play', async (req, res) => {
     });
   } catch (error) {
     console.error('Error playing:', error.message);
+    savingBlocked = false; // Unblock saves on error
     res.status(500).json({ error: 'Could not play', success: false });
   }
 });
@@ -695,13 +776,17 @@ app.post('/api/pause', async (req, res) => {
     if (statusRes.ok) {
       const status = await statusRes.json();
       if (status.track && currentState.contextUri) {
+        const trackName = status.track.name;
+        const artistName = status.track.artist_names?.join(', ') || status.track.artist;
         const saved = await saveCurrentPosition(
           currentState.contextUri,
           status.track.uri,
-          status.track.position
+          status.track.position,
+          trackName,
+          artistName
         );
         if (saved) {
-          console.log(`💾 Saved to catalog on pause: ${status.track.uri.split(':').pop().slice(0,8)}... @ ${Math.floor(status.track.position / 1000)}s`);
+          console.log(`💾 [pause] Saved: "${trackName}" @ ${Math.floor(status.track.position / 1000)}s`);
         }
       }
     }

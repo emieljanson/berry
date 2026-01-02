@@ -2,6 +2,10 @@ import { useRef, useEffect, useCallback } from 'react'
 import useEmblaCarousel from 'embla-carousel-react'
 import { getImageUrl } from '../api'
 
+// Debug logging - enabled in development, disabled in production
+const DEBUG = import.meta.env.DEV
+const log = (...args) => DEBUG && console.log('🎠 [carousel]', ...args)
+
 const Carousel = ({ 
   displayItems, 
   selectedIndex, 
@@ -11,14 +15,13 @@ const Carousel = ({
   setDeleteMode,
   deleting,
   saving,
-  onSlideClick,
+  onPlay,
   onSaveContext,
   onDeleteItem,
   onTogglePlayPause,
   isItemPlaying,
-  findPlayingIndex,
-  pendingItem,
-  setPendingItem
+  scrollToIndex,
+  setScrollToIndex
 }) => {
   const [emblaRef, emblaApi] = useEmblaCarousel({
     align: 'center',
@@ -26,19 +29,28 @@ const Carousel = ({
     skipSnaps: true,
   })
 
-  // Core refs
+  // Refs for stable callbacks (avoid re-renders from prop changes)
   const displayItemsRef = useRef(displayItems)
+  const onPlayRef = useRef(onPlay)
+  const isItemPlayingRef = useRef(isItemPlaying)
   const longPressTimerRef = useRef(null)
   const playTimerRef = useRef(null)
   const lastPlayedByUsRef = useRef(null)
-  const lastSyncedContextRef = useRef(null)
-  const isSyncingRef = useRef(false)
   const userInteractingRef = useRef(false)
-  const pointerDownSnapRef = useRef(null)
+  const emblaInitializedRef = useRef(false)
   
+  // Keep refs up to date
   useEffect(() => {
     displayItemsRef.current = displayItems
   }, [displayItems])
+  
+  useEffect(() => {
+    onPlayRef.current = onPlay
+  }, [onPlay])
+  
+  useEffect(() => {
+    isItemPlayingRef.current = isItemPlaying
+  }, [isItemPlaying])
 
   // Cleanup timers on unmount
   useEffect(() => () => {
@@ -46,138 +58,187 @@ const Carousel = ({
     clearTimeout(longPressTimerRef.current)
   }, [])
 
-  // Handle carousel selection change
-  const onSelect = useCallback(() => {
-    if (!emblaApi) return
-    setSelectedIndex(emblaApi.selectedScrollSnap())
-  }, [emblaApi, setSelectedIndex])
+  // Start play timer for an item
+  const startPlayTimer = useCallback((item) => {
+    // Cancel existing timer
+    if (playTimerRef.current) {
+      log('⏱️ Timer cancelled (new selection)')
+      clearTimeout(playTimerRef.current)
+      playTimerRef.current = null
+    }
 
-  // Handle settle - start 1s auto-play timer
-  const onSettle = useCallback(() => {
-    if (!emblaApi) return
-    
-    const currentIndex = emblaApi.selectedScrollSnap()
-    const currentItem = displayItemsRef.current[currentIndex]
-    
-    clearTimeout(playTimerRef.current)
-    
-    // If this item is already playing, we're done
-    if (isItemPlaying(currentItem)) {
-      setPendingItem(null)
-      userInteractingRef.current = false
+    if (!item) return
+
+    // Don't start timer if already playing
+    if (isItemPlayingRef.current(item)) {
+      log('⏱️ Timer skipped (already playing):', item.name)
       return
     }
+
+    log('⏱️ Timer starting for:', item.name)
     
-    // Set pending item (UI shows this item's info) and start 1s timer
-    setPendingItem(currentItem)
-    
-    playTimerRef.current = setTimeout(() => {
-      if (isItemPlaying(currentItem)) {
-        setPendingItem(null)
-        userInteractingRef.current = false
+    playTimerRef.current = setTimeout(async () => {
+      playTimerRef.current = null
+      
+      // Double check it's still not playing
+      if (isItemPlayingRef.current(item)) {
+        log('⏱️ Timer fired but item now playing, skipping')
         return
       }
       
-      lastPlayedByUsRef.current = currentItem?.uri
-      onSlideClick(currentItem, currentIndex)
-      setPendingItem(null)
-      
-      // Allow sync again after play propagates
-      setTimeout(() => {
-        userInteractingRef.current = false
-      }, 500)
+      log('⏱️ Timer fired! Playing:', item.name)
+      lastPlayedByUsRef.current = item.uri
+      await onPlayRef.current(item)
     }, 1000)
-  }, [emblaApi, isItemPlaying, onSlideClick, setPendingItem])
+  }, [])
 
-  // Subscribe to carousel events
+  // Cancel play timer
+  const cancelPlayTimer = useCallback(() => {
+    if (playTimerRef.current) {
+      log('⏱️ Timer cancelled')
+      clearTimeout(playTimerRef.current)
+      playTimerRef.current = null
+    }
+  }, [])
+
+  // Subscribe to carousel events (only once when emblaApi is ready)
   useEffect(() => {
     if (!emblaApi) return
     
-    const onPointerDown = () => {
-      pointerDownSnapRef.current = emblaApi.selectedScrollSnap()
+    // Only log on first init
+    if (!emblaInitializedRef.current) {
+      log('Embla initialized, items:', displayItemsRef.current.length)
+      emblaInitializedRef.current = true
+    }
+    
+    const handleSelect = () => {
+      const newIndex = emblaApi.selectedScrollSnap()
+      log('onSelect:', newIndex)
+      setSelectedIndex(newIndex)
+    }
+    
+    const handleSettle = () => {
+      const currentIndex = emblaApi.selectedScrollSnap()
+      const currentItem = displayItemsRef.current[currentIndex]
+      log('onSettle: index', currentIndex, 'item:', currentItem?.name)
+      startPlayTimer(currentItem)
+      userInteractingRef.current = false
+    }
+    
+    const handlePointerDown = () => {
       userInteractingRef.current = true
-      clearTimeout(playTimerRef.current)
+      cancelPlayTimer()
     }
     
-    const onPointerUp = () => {
-      const snapAtUp = emblaApi.selectedScrollSnap()
-      // If snap didn't change, it was a tap - toggle play/pause
-      if (snapAtUp === pointerDownSnapRef.current) {
-        onTogglePlayPause()
-      }
-    }
-    
-    emblaApi.on('select', onSelect)
-    emblaApi.on('settle', onSettle)
-    emblaApi.on('pointerDown', onPointerDown)
-    emblaApi.on('pointerUp', onPointerUp)
-    onSelect()
+    emblaApi.on('select', handleSelect)
+    emblaApi.on('settle', handleSettle)
+    emblaApi.on('pointerDown', handlePointerDown)
+    handleSelect() // Initial call
     
     return () => {
-      emblaApi.off('select', onSelect)
-      emblaApi.off('settle', onSettle)
-      emblaApi.off('pointerDown', onPointerDown)
-      emblaApi.off('pointerUp', onPointerUp)
-      clearTimeout(playTimerRef.current)
+      emblaApi.off('select', handleSelect)
+      emblaApi.off('settle', handleSettle)
+      emblaApi.off('pointerDown', handlePointerDown)
+      cancelPlayTimer()
     }
-  }, [emblaApi, onSelect, onSettle, onTogglePlayPause])
+  }, [emblaApi, setSelectedIndex, startPlayTimer, cancelPlayTimer])
 
-  // Sync carousel to playing context (external changes only)
-  useEffect(() => {
-    if (!emblaApi || displayItems.length === 0 || isSyncingRef.current) return
-    if (userInteractingRef.current || pendingItem) return
+  // Handle click/tap on a specific slide
+  const handleSlideClick = useCallback((clickedIndex) => {
+    if (!emblaApi) return
     
-    const contextUri = nowPlaying?.context?.uri
-    const trackUri = nowPlaying?.track?.uri
-    const playingKey = contextUri || trackUri
+    const currentSnap = emblaApi.selectedScrollSnap()
+    const clickedItem = displayItemsRef.current[clickedIndex]
     
-    if (!playingKey) {
-      lastSyncedContextRef.current = null
-      return
+    log('Slide clicked:', clickedIndex, 'current:', currentSnap, 'item:', clickedItem?.name)
+    
+    if (clickedIndex === currentSnap) {
+      // Clicked on active slide - toggle play/pause
+      log('Toggle play/pause on active slide')
+      onTogglePlayPause()
+    } else {
+      // Clicked on different slide - scroll to it (will trigger settle -> auto-play)
+      log('Scrolling to clicked slide:', clickedIndex)
+      userInteractingRef.current = true
+      cancelPlayTimer()
+      emblaApi.scrollTo(clickedIndex)
     }
+  }, [emblaApi, onTogglePlayPause, cancelPlayTimer])
+
+  // Handle external scroll requests (e.g., scroll back after failure)
+  useEffect(() => {
+    if (!emblaApi || scrollToIndex === null) return
     
-    // Skip sync for item we just started
-    if (playingKey === lastPlayedByUsRef.current) {
+    log('External scroll request to index:', scrollToIndex)
+    cancelPlayTimer() // Cancel any pending timer
+    emblaApi.scrollTo(scrollToIndex, true) // instant scroll
+    setSelectedIndex(scrollToIndex)
+    setScrollToIndex(null)
+  }, [emblaApi, scrollToIndex, setScrollToIndex, setSelectedIndex, cancelPlayTimer])
+
+  // Sync carousel to playing context (on mount and when context changes)
+  const nowPlayingContextUri = nowPlaying?.context?.uri
+  const nowPlayingTrackUri = nowPlaying?.track?.uri
+  const nowPlayingAlbum = nowPlaying?.track?.album
+  
+  useEffect(() => {
+    if (!emblaApi || displayItemsRef.current.length === 0) return
+    if (userInteractingRef.current) return
+    if (playTimerRef.current) return // Don't sync while timer is active
+    
+    const contextUri = nowPlayingContextUri
+    const trackUri = nowPlayingTrackUri
+    
+    // Skip sync for item we just started playing
+    if (contextUri === lastPlayedByUsRef.current) {
+      log('Skipping sync - we just played this')
       lastPlayedByUsRef.current = null
       return
     }
     
-    if (playingKey === lastSyncedContextRef.current) return
+    if (!contextUri && !trackUri) return
     
-    const playingIndex = findPlayingIndex(displayItems, contextUri, trackUri)
+    // Find playing item in displayItems
+    const items = displayItemsRef.current
+    const playingIndex = items.findIndex(item => {
+      if (item.uri === contextUri) return true
+      if (item.currentTrack?.uri === trackUri) return true
+      // Match by album name as fallback
+      if (nowPlayingAlbum && (item.name === nowPlayingAlbum || item.album === nowPlayingAlbum)) return true
+      return false
+    })
+    
     if (playingIndex === -1) return
     
-    lastSyncedContextRef.current = playingKey
+    const currentSnap = emblaApi.selectedScrollSnap()
+    if (currentSnap === playingIndex) return
     
-    if (emblaApi.selectedScrollSnap() === playingIndex) return
-    
-    isSyncingRef.current = true
-    emblaApi.scrollTo(playingIndex)
-    setTimeout(() => { isSyncingRef.current = false }, 500)
-  }, [emblaApi, nowPlaying?.context?.uri, nowPlaying?.track?.uri, displayItems, findPlayingIndex, pendingItem])
+    log('Syncing to playing item:', playingIndex, items[playingIndex]?.name)
+    emblaApi.scrollTo(playingIndex, true) // instant scroll
+    setSelectedIndex(playingIndex)
+  }, [emblaApi, nowPlayingContextUri, nowPlayingTrackUri, nowPlayingAlbum, setSelectedIndex])
 
   // Reinitialize when displayItems count changes
+  const itemsCount = displayItems.length
   useEffect(() => {
-    if (!emblaApi || displayItems.length === 0) return
+    if (!emblaApi || itemsCount === 0) return
     
-    const contextUri = nowPlaying?.context?.uri
-    const trackUri = nowPlaying?.track?.uri
-    const targetIndex = findPlayingIndex(displayItems, contextUri, trackUri)
-    
-    isSyncingRef.current = true
+    log('ReInit - items count:', itemsCount)
     emblaApi.reInit()
     
-    const scrollTarget = targetIndex !== -1 ? targetIndex : selectedIndex
-    if (scrollTarget >= 0 && scrollTarget < displayItems.length) {
-      emblaApi.scrollTo(scrollTarget, true)
-      if (targetIndex !== -1) {
-        lastSyncedContextRef.current = contextUri || trackUri
+    // Find and scroll to playing item
+    const contextUri = nowPlayingContextUri
+    if (contextUri) {
+      const items = displayItemsRef.current
+      const playingIndex = items.findIndex(item => item.uri === contextUri)
+      if (playingIndex !== -1) {
+        log('ReInit scrolling to playing:', playingIndex)
+        emblaApi.scrollTo(playingIndex, true)
+        setSelectedIndex(playingIndex)
       }
     }
-    
-    setTimeout(() => { isSyncingRef.current = false }, 100)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emblaApi, displayItems.length])
+  }, [emblaApi, itemsCount])
 
   // Long press for delete mode
   const handlePressStart = (item) => {
@@ -232,6 +293,7 @@ const Carousel = ({
                 onPointerUp={handlePressEnd}
                 onPointerLeave={handlePressEnd}
                 onPointerCancel={handlePressEnd}
+                onClick={() => handleSlideClick(index)}
               >
                 <div className="slide-content">
                   {renderCover(item)}

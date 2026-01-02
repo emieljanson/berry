@@ -8,6 +8,10 @@ import { useSleepMode } from './hooks/useSleepMode'
 import { useTempItem } from './hooks/useTempItem'
 import './App.css'
 
+// Debug logging - enabled in development, disabled in production
+const DEBUG = import.meta.env.DEV
+const log = (...args) => DEBUG && console.log('📱 [app]', ...args)
+
 // Toast messages
 const TOAST = {
   PLAY_FAILED: 'Cannot play',
@@ -25,10 +29,11 @@ function App() {
   const [deleteMode, setDeleteMode] = useState(null)
   const [deleting, setDeleting] = useState(false)
   const [toast, setToast] = useState(null)
-  const [pendingItem, setPendingItem] = useState(null)
+  const [scrollToIndex, setScrollToIndex] = useState(null) // For scroll-back after failure
   
   const suppressUntilPlayRef = useRef(false)
   const toastTimeoutRef = useRef(null)
+  const pendingPlayRef = useRef(null) // Prevent duplicate play requests
   
   // Sleep mode - screen off after inactivity when not playing
   const isScreenOff = useSleepMode(nowPlaying?.playing)
@@ -59,6 +64,7 @@ function App() {
         const data = await api.getCatalog()
         const filteredItems = (data.items || []).filter(item => item.type !== 'track')
         setCatalog({ ...data, items: filteredItems })
+        log('Catalog loaded:', filteredItems.length, 'items')
       } catch (err) {
         console.error('Error fetching catalog:', err)
       }
@@ -75,10 +81,15 @@ function App() {
       try {
         const data = JSON.parse(event.data)
         
+        log('🔌 [ws] Message:', 
+          'context:', data.context?.uri?.slice(-20), 
+          'track:', data.track?.name,
+          'playing:', data.playing
+        )
+        
         if (data.cleared) {
           suppressUntilPlayRef.current = true
           setNowPlaying(null)
-          setPendingItem(null)
           return
         }
         
@@ -91,8 +102,7 @@ function App() {
     }
 
     const handleReconnect = () => {
-      // Clear pending item on reconnect to force carousel sync
-      setPendingItem(null)
+      log('🔌 [ws] Reconnected')
     }
 
     const cleanup = createWebSocket(handleMessage, handleReconnect)
@@ -104,40 +114,55 @@ function App() {
     return item?.uri === nowPlaying?.context?.uri
   }, [nowPlaying?.context?.uri])
 
-  // Play an item if not already playing
-  const selectAndPlay = useCallback(async (item) => {
-    if (!item || isItemPlaying(item)) return
+  // Play an item - called by Carousel after 1s timer
+  const handlePlay = useCallback(async (item) => {
+    log('▶️ [play] Request:', item?.name, item?.uri?.slice(-20))
     
+    if (!item) {
+      return { success: true }
+    }
+    
+    // Skip if already playing OR if we have a pending request for this item
+    if (isItemPlaying(item) || pendingPlayRef.current === item.uri) {
+      log('▶️ [play] Skipped (already playing or pending)')
+      return { success: true }
+    }
+    
+    pendingPlayRef.current = item.uri
     suppressUntilPlayRef.current = false
     
     try {
       const result = await api.play(item.uri)
+      log('▶️ [play] Result:', result.success ? '✅' : '❌', result.reason || '')
+      
       if (!result.success) {
+        // Show error toast
         if (result.reason === 'unavailable') {
           showToast(TOAST.UNAVAILABLE)
         } else {
           showToast(TOAST.PLAY_FAILED)
         }
+        
+        // Scroll back to the playing item
+        const playingIdx = findPlayingIndex(displayItems, nowPlaying?.context?.uri, nowPlaying?.track?.uri)
+        if (playingIdx !== -1) {
+          log('↩️ [play] Scrolling back to playing item:', playingIdx)
+          setScrollToIndex(playingIdx)
+        }
+        
+        return result
       }
+      
+      return result
     } catch (err) {
       console.error('Error playing:', err)
+      log('▶️ [play] Exception:', err.message)
       showToast(TOAST.PLAY_FAILED)
+      return { success: false, reason: 'error' }
+    } finally {
+      pendingPlayRef.current = null
     }
-  }, [isItemPlaying, showToast])
-
-  // Handle slide click from carousel
-  const onSlideClick = useCallback((item, index) => {
-    if (item && isItemPlaying(item)) {
-      if (nowPlaying?.playing) {
-        api.pause()
-      } else {
-        suppressUntilPlayRef.current = false
-        api.resume()
-      }
-    } else {
-      selectAndPlay(item)
-    }
-  }, [selectAndPlay, isItemPlaying, nowPlaying?.playing])
+  }, [isItemPlaying, showToast, findPlayingIndex, displayItems, nowPlaying?.context?.uri, nowPlaying?.track?.uri])
 
   // Player controls
   const next = () => api.next()
@@ -148,24 +173,19 @@ function App() {
   }
   
   const togglePlayPause = useCallback(() => {
-    if (pendingItem) {
-      selectAndPlay(pendingItem)
-      setPendingItem(null)
-      return
-    }
-    
     if (nowPlaying?.playing) {
       return api.pause()
     } else if (nowPlaying?.paused) {
       suppressUntilPlayRef.current = false
       return api.resume()
     } else {
+      // Nothing playing, play the selected item
       const selectedItem = displayItems[selectedIndex]
       if (selectedItem) {
-        return selectAndPlay(selectedItem)
+        return handlePlay(selectedItem)
       }
     }
-  }, [pendingItem, nowPlaying?.playing, nowPlaying?.paused, displayItems, selectedIndex, selectAndPlay])
+  }, [nowPlaying?.playing, nowPlaying?.paused, displayItems, selectedIndex, handlePlay])
 
   // Save context to catalog
   const saveContext = async () => {
@@ -243,6 +263,27 @@ function App() {
     item.uri === contextUri || item.currentTrack?.uri === trackUri
   )
 
+  // Determine what track info to display
+  // Priority: 1) Now playing track, 2) Saved track from selected item, 3) Nothing
+  const selectedItem = displayItems[selectedIndex]
+  const displayTrack = (() => {
+    // If the selected item is playing, show the actual playing track
+    if (isItemPlaying(selectedItem) && track) {
+      return { name: track.name, artist: track.artist }
+    }
+    
+    // If selected item has saved progress, show that track info
+    if (selectedItem?.currentTrack?.name) {
+      return { 
+        name: selectedItem.currentTrack.name, 
+        artist: selectedItem.currentTrack.artist 
+      }
+    }
+    
+    // No track info available - show loading or empty
+    return null
+  })()
+
   return (
     <div className="app" onClick={handleAppClick}>
       <SleepOverlay isActive={isScreenOff} />
@@ -259,41 +300,40 @@ function App() {
             setDeleteMode={setDeleteMode}
             deleting={deleting}
             saving={saving}
-            onSlideClick={onSlideClick}
+            onPlay={handlePlay}
             onSaveContext={saveContext}
             onDeleteItem={deleteFromCatalog}
             onTogglePlayPause={togglePlayPause}
             isItemPlaying={isItemPlaying}
-            findPlayingIndex={findPlayingIndex}
-            pendingItem={pendingItem}
-            setPendingItem={setPendingItem}
+            scrollToIndex={scrollToIndex}
+            setScrollToIndex={setScrollToIndex}
           />
 
-          {/* Track Info - show pending item info if swiping, otherwise nowPlaying */}
+          {/* Track Info - show saved track or now playing */}
           <div className="track-info">
-            {pendingItem ? (
+            {displayTrack ? (
               <>
-                <h2 className="track-name">{pendingItem.name || 'Loading...'}</h2>
-                <p className="artist-name">{pendingItem.artist || ''}</p>
+                <h2 className="track-name">{displayTrack.name}</h2>
+                <p className="artist-name">{displayTrack.artist}</p>
               </>
-            ) : track ? (
+            ) : nowPlaying?.playing ? (
               <>
-                <h2 className="track-name">{track.name}</h2>
-                <p className="artist-name">{track.artist}</p>
+                <h2 className="track-name track-loading">Loading...</h2>
+                <p className="artist-name">&nbsp;</p>
               </>
             ) : (
               <>
-                <h2 className="track-name">{displayItems[selectedIndex]?.name || 'Select an album'}</h2>
-                <p className="artist-name">{displayItems[selectedIndex]?.artist || ''}</p>
+                <h2 className="track-name track-loading">Tap play to start</h2>
+                <p className="artist-name">&nbsp;</p>
               </>
             )}
           </div>
 
           <ProgressBar 
-            progress={pendingItem ? 0 : progress}
-            shouldAnimate={pendingItem ? false : shouldAnimate}
-            currentTime={pendingItem ? '0:00' : currentTime}
-            totalTime={pendingItem ? '0:00' : totalTime}
+            progress={isItemPlaying(selectedItem) ? progress : 0}
+            shouldAnimate={isItemPlaying(selectedItem) ? shouldAnimate : false}
+            currentTime={isItemPlaying(selectedItem) ? currentTime : '0:00'}
+            totalTime={isItemPlaying(selectedItem) ? totalTime : '0:00'}
           />
 
           <PlaybackControls 

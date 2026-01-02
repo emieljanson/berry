@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Berry Development Script
-# Start alle services en monitor de status
+# Start all services and monitor status
 
 set -e
 
@@ -10,9 +10,31 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 NC='\033[0m' # No Color
 
+# Verbose mode (show all logs including progress saves)
+VERBOSE=false
+
+# Parse arguments
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        -v|--verbose) VERBOSE=true ;;
+        -h|--help) 
+            echo "Usage: ./dev.sh [-v|--verbose]"
+            echo "  -v, --verbose  Show all logs (including progress saves)"
+            exit 0
+            ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+    shift
+done
+
 echo -e "${GREEN}🍓 Berry Development Environment${NC}"
+if [ "$VERBOSE" = true ]; then
+    echo -e "${YELLOW}(Verbose mode)${NC}"
+fi
 echo "=================================="
 echo ""
 
@@ -24,9 +46,21 @@ LIBRESPOT_CONFIG="/opt/homebrew/etc/go-librespot"
 cleanup() {
     echo ""
     echo -e "${YELLOW}Shutting down...${NC}"
-    pkill -f "go-librespot" 2>/dev/null || true
-    pkill -f "node.*berry.*server" 2>/dev/null || true
-    pkill -f "vite" 2>/dev/null || true
+    
+    # Force kill all related processes
+    pkill -9 -f "go-librespot" 2>/dev/null || true
+    pkill -9 -f "node.*server" 2>/dev/null || true
+    pkill -9 -f "vite" 2>/dev/null || true
+    
+    # Wait for processes to die
+    sleep 1
+    
+    # Double check
+    if pgrep -f "node.*server" > /dev/null; then
+        echo -e "${YELLOW}Force killing remaining node processes...${NC}"
+        pkill -9 -f "node" 2>/dev/null || true
+    fi
+    
     echo -e "${GREEN}Done!${NC}"
     exit 0
 }
@@ -54,9 +88,16 @@ check_prereqs() {
 start_librespot() {
     echo -e "${BLUE}Starting go-librespot...${NC}"
     
-    # Kill existing
-    pkill -f "go-librespot" 2>/dev/null || true
+    # Force kill existing
+    pkill -9 -f "go-librespot" 2>/dev/null || true
     sleep 1
+    
+    # Wait until dead
+    while pgrep -f "go-librespot" > /dev/null; do
+        echo "  Waiting for old librespot to die..."
+        pkill -9 -f "go-librespot" 2>/dev/null || true
+        sleep 1
+    done
     
     # Ensure config exists
     if [ ! -f "$LIBRESPOT_CONFIG/config.yml" ]; then
@@ -111,13 +152,24 @@ EOF
 start_backend() {
     echo -e "${BLUE}Starting Berry backend...${NC}"
     
-    pkill -f "node.*server" 2>/dev/null || true
+    # Kill any existing backend processes
+    pkill -9 -f "node.*server" 2>/dev/null || true
     sleep 1
+    
+    # Wait until all node processes are dead
+    while pgrep -f "node.*server" > /dev/null; do
+        echo "  Waiting for old processes to die..."
+        pkill -9 -f "node" 2>/dev/null || true
+        sleep 1
+    done
     
     cd "$BERRY_DIR/backend"
     npm install --silent
+    
+    # Use node --watch for auto-restart on file changes
     npm run dev > /tmp/berry-backend.log 2>&1 &
     BACKEND_PID=$!
+    echo "  Backend PID: $BACKEND_PID"
     sleep 2
     
     if curl -s http://localhost:3001/api/now-playing > /dev/null 2>&1; then
@@ -134,13 +186,14 @@ start_backend() {
 start_frontend() {
     echo -e "${BLUE}Starting Berry frontend...${NC}"
     
-    pkill -f "vite" 2>/dev/null || true
+    pkill -9 -f "vite" 2>/dev/null || true
     sleep 1
     
     cd "$BERRY_DIR/frontend"
     npm install --silent
     npm run dev > /tmp/berry-frontend.log 2>&1 &
     FRONTEND_PID=$!
+    echo "  Frontend PID: $FRONTEND_PID"
     sleep 3
     
     if curl -s http://localhost:3000 > /dev/null 2>&1; then
@@ -162,55 +215,162 @@ monitor() {
     echo "  Backend:   http://localhost:3001"
     echo "  Librespot: http://localhost:3678"
     echo ""
-    echo -e "${YELLOW}Press Ctrl+C to stop all services${NC}"
-    echo ""
+    echo "=================================="
+    echo -e "${CYAN}📋 Log Legend:${NC}"
+    echo -e "  ${CYAN}📱 [app]${NC}      - Frontend App.jsx"
+    echo -e "  ${CYAN}🎠 [carousel]${NC} - Frontend Carousel"
+    echo -e "  ${CYAN}⏱️ [timer]${NC}    - Playback timer"
+    echo -e "  ${MAGENTA}💾 [progress]${NC} - Backend save progress"
+    echo -e "  ${GREEN}▶️ [play]${NC}     - Play requests"
+    echo -e "  ${RED}❌${NC}            - Errors"
     echo "=================================="
     echo ""
+    echo -e "${YELLOW}Press Ctrl+C to stop all services${NC}"
+    echo ""
+    
+    # Track last log positions
+    LAST_BACKEND_LINE=0
+    LAST_LIBRESPOT_LINE=0
+    LAST_TRACK=""
     
     # Monitor loop
     while true; do
+        # Check for multiple backend processes (bad!)
+        NODE_COUNT=$(pgrep -fc "node.*server" 2>/dev/null || echo "0")
+        if [ "$NODE_COUNT" -gt 1 ]; then
+            echo -e "${RED}⚠️ Multiple backend processes detected ($NODE_COUNT)! Cleaning up...${NC}"
+            pkill -9 -f "node.*server" 2>/dev/null || true
+            sleep 2
+            # Restart backend
+            cd "$BERRY_DIR/backend"
+            npm run dev > /tmp/berry-backend.log 2>&1 &
+            echo -e "${GREEN}✓ Backend restarted${NC}"
+            LAST_BACKEND_LINE=0
+        fi
+        
         # Check if go-librespot crashed
         if ! pgrep -f "go-librespot" > /dev/null; then
-            echo ""
-            echo -e "${RED}💥 go-librespot crashed!${NC}"
+            echo -e "${RED}💥 librespot crashed${NC}"
             
-            # Show last lines of log
             if [ -f /tmp/berry-librespot.log ]; then
-                echo -e "${YELLOW}Last log lines:${NC}"
-                tail -10 /tmp/berry-librespot.log
+                tail -3 /tmp/berry-librespot.log | while read -r line; do
+                    echo -e "   ${RED}$line${NC}"
+                done
             fi
             
-            echo ""
-            echo -e "${YELLOW}Restarting go-librespot...${NC}"
+            echo -e "${YELLOW}↻ restarting...${NC}"
             /opt/homebrew/opt/go-librespot/bin/go-librespot --config_dir "$LIBRESPOT_CONFIG" > /tmp/berry-librespot.log 2>&1 &
             sleep 3
+            LAST_LIBRESPOT_LINE=0
             
             if pgrep -f "go-librespot" > /dev/null; then
-                echo -e "${GREEN}✓ go-librespot restarted${NC}"
+                echo -e "${GREEN}✓ librespot back${NC}"
             else
-                echo -e "${RED}✗ Failed to restart go-librespot${NC}"
+                echo -e "${RED}✗ restart failed${NC}"
             fi
-            echo ""
         fi
         
-        # Get now playing
+        # Stream new backend log lines (events)
+        if [ -f /tmp/berry-backend.log ]; then
+            CURRENT_LINES=$(wc -l < /tmp/berry-backend.log)
+            if [ "$CURRENT_LINES" -gt "$LAST_BACKEND_LINE" ]; then
+                tail -n +$((LAST_BACKEND_LINE + 1)) /tmp/berry-backend.log | while read -r line; do
+                    # Verbose mode: show everything
+                    if [ "$VERBOSE" = true ]; then
+                        case "$line" in
+                            *"📱"*|*"🎠"*|*"⏱️"*|*"▶️"*|*"💾"*|*"🔌"*|*"📤"*|*"📥"*|*"↩️"*)
+                                echo -e "${CYAN}$line${NC}"
+                                ;;
+                            *"error"*|*"Error"*|*"ERROR"*|*"❌"*)
+                                echo -e "${RED}$line${NC}"
+                                ;;
+                            *"✅"*|*"✓"*)
+                                echo -e "${GREEN}$line${NC}"
+                                ;;
+                            *"⚠"*|*"warn"*|*"Warn"*)
+                                echo -e "${YELLOW}$line${NC}"
+                                ;;
+                            *)
+                                echo "$line"
+                                ;;
+                        esac
+                        continue
+                    fi
+                    
+                    # Normal mode: only show important stuff (clean output)
+                    case "$line" in
+                        *"Error"*|*"error"*|*"ERROR"*|*"✗"*|*"❌"*)
+                            # Always show errors
+                            echo -e "${RED}$line${NC}"
+                            ;;
+                        *"🍓 Berry backend"*|*"🌐 Frontend WebSocket"*)
+                            # Startup messages
+                            echo -e "${GREEN}$line${NC}"
+                            ;;
+                        *"📸 Saved new cover"*)
+                            # New album added
+                            echo -e "${BLUE}$line${NC}"
+                            ;;
+                        *"🗑️ Removed from catalog"*)
+                            # Album removed
+                            echo -e "${YELLOW}$line${NC}"
+                            ;;
+                        *)
+                            # Skip everything else in normal mode
+                            ;;
+                    esac
+                done
+                LAST_BACKEND_LINE=$CURRENT_LINES
+            fi
+        fi
+        
+        # Stream librespot logs
+        if [ -f /tmp/berry-librespot.log ]; then
+            CURRENT_LINES=$(wc -l < /tmp/berry-librespot.log)
+            if [ "$CURRENT_LINES" -gt "$LAST_LIBRESPOT_LINE" ]; then
+                tail -n +$((LAST_LIBRESPOT_LINE + 1)) /tmp/berry-librespot.log | while read -r line; do
+                    # Skip harmless warnings
+                    case "$line" in
+                        *"failed getting output device delay"*)
+                            continue
+                            ;;
+                    esac
+                    
+                    # Show errors and warnings
+                    case "$line" in
+                        *"error"*|*"Error"*|*"ERROR"*|*"failed"*|*"Failed"*)
+                            MSG=$(echo "$line" | sed 's/.*level=error //' | sed 's/.*msg="//' | sed 's/".*//' | cut -c1-50)
+                            echo -e "${RED}✗ librespot: $MSG${NC}"
+                            ;;
+                        *"level=warn"*)
+                            MSG=$(echo "$line" | sed 's/.*msg="//' | sed 's/".*//' | cut -c1-40)
+                            echo -e "${YELLOW}⚠ $MSG${NC}"
+                            ;;
+                    esac
+                done
+                LAST_LIBRESPOT_LINE=$CURRENT_LINES
+            fi
+        fi
+        
+        # Show current track (only when changed)
         NOW=$(curl -s http://localhost:3001/api/now-playing 2>/dev/null)
-        
         if [ -n "$NOW" ]; then
-            TRACK=$(echo "$NOW" | jq -r '.track.name // "Nothing playing"')
+            TRACK=$(echo "$NOW" | jq -r '.track.name // ""')
             ARTIST=$(echo "$NOW" | jq -r '.track.artist // ""')
-            PLAYING=$(echo "$NOW" | jq -r 'if .playing then "▶" else "⏸" end')
+            PLAYING=$(echo "$NOW" | jq -r '.playing // false')
             
-            # Clear line and print status
-            echo -ne "\r\033[K${PLAYING} ${TRACK}"
-            if [ -n "$ARTIST" ] && [ "$ARTIST" != "null" ]; then
-                echo -ne " - ${ARTIST}"
+            TRACK_KEY="${TRACK}|${ARTIST}|${PLAYING}"
+            if [ "$TRACK_KEY" != "$LAST_TRACK" ] && [ -n "$TRACK" ] && [ "$TRACK" != "null" ]; then
+                if [ "$PLAYING" = "true" ]; then
+                    echo -e "${GREEN}▶${NC} $TRACK - $ARTIST"
+                else
+                    echo -e "${YELLOW}⏸${NC} $TRACK - $ARTIST"
+                fi
+                LAST_TRACK="$TRACK_KEY"
             fi
-        else
-            echo -ne "\r\033[K⚠️  Backend not responding"
         fi
         
-        sleep 2
+        sleep 1
     done
 }
 
