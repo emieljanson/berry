@@ -23,7 +23,7 @@ else
 fi
 
 # ============================================
-# 2. Configure Spotify (if not done)
+# 2. Configure go-librespot
 # ============================================
 mkdir -p ~/.config/go-librespot
 
@@ -38,59 +38,43 @@ port = 3678
 device_name = "Berry"
 device_type = "speaker"
 EOF
+  echo "✅ go-librespot config created"
 fi
 
-# Check if credentials exist in state.json
-if [ -f ~/.config/go-librespot/state.json ] && grep -q '"credentials"' ~/.config/go-librespot/state.json; then
-  echo "✅ Spotify credentials found"
-else
-  echo ""
-  echo "🎵 Spotify login required!"
-  echo "   Opening Spotify app on your phone/computer..."
-  echo "   Connect to 'Berry' device to authenticate"
-  echo ""
-  
-  # Kill any existing instance
-  pkill -f go-librespot 2>/dev/null || true
-  sleep 1
-  
-  # Start go-librespot in background
-  go-librespot --config_dir ~/.config/go-librespot &
-  LIBRESPOT_PID=$!
-  
-  # Wait for credentials (max 2 minutes)
-  echo "   Waiting for Spotify connection..."
-  for i in {1..120}; do
-    if [ -f ~/.config/go-librespot/state.json ] && grep -q '"credentials"' ~/.config/go-librespot/state.json; then
-      echo "   ✅ Spotify connected!"
-      sleep 2
-      break
-    fi
-    sleep 1
-    # Show progress every 10 seconds
-    if [ $((i % 10)) -eq 0 ]; then
-      echo "   Still waiting... ($i seconds)"
-    fi
-  done
-  
-  # Stop go-librespot (will be started by systemd later)
-  kill $LIBRESPOT_PID 2>/dev/null || true
-  
-  # Final check
-  if ! grep -q '"credentials"' ~/.config/go-librespot/state.json 2>/dev/null; then
-    echo ""
-    echo "❌ Spotify login timed out!"
-    echo "   Run this script again and connect via Spotify app"
-    exit 1
-  fi
-fi
+# Note: Spotify credentials will be set up via the Berry app
+# The app shows a setup screen prompting users to connect via Spotify
 
 # ============================================
 # 3. Install system packages
 # ============================================
 echo "📦 Installing system packages..."
 sudo apt-get update
-sudo apt-get install -y python3-venv python3-pip libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev
+sudo apt-get install -y python3-venv python3-pip libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev network-manager
+
+# ============================================
+# 3b. Install WiFi Connect (captive portal for WiFi setup)
+# ============================================
+if [ ! -f /usr/local/bin/wifi-connect ]; then
+  echo "📶 Installing WiFi Connect..."
+  ARCH=$(dpkg --print-architecture)
+  
+  # Map Debian arch to wifi-connect arch
+  case $ARCH in
+    arm64|aarch64) WC_ARCH="aarch64" ;;
+    armhf) WC_ARCH="armv7hf" ;;
+    *) WC_ARCH="aarch64" ;;
+  esac
+  
+  # Download wifi-connect
+  WC_VERSION="4.11.82"
+  curl -L "https://github.com/balena-os/wifi-connect/releases/download/v${WC_VERSION}/wifi-connect-v${WC_VERSION}-linux-${WC_ARCH}.tar.gz" \
+    -o /tmp/wifi-connect.tar.gz
+  sudo tar -xzf /tmp/wifi-connect.tar.gz -C /usr/local/bin
+  rm /tmp/wifi-connect.tar.gz
+  echo "✅ WiFi Connect installed"
+else
+  echo "✅ WiFi Connect already installed"
+fi
 
 # ============================================
 # 4. Setup Python virtual environment
@@ -112,10 +96,12 @@ mkdir -p data/images
 # 5. Setup systemd services (symlinks)
 # ============================================
 echo "⚙️ Setting up systemd services..."
+chmod +x ~/berry/pi/wifi-check.sh
+sudo ln -sf ~/berry/pi/systemd/berry-wifi.service /etc/systemd/system/
 sudo ln -sf ~/berry/pi/systemd/berry-librespot.service /etc/systemd/system/
 sudo ln -sf ~/berry/pi/systemd/berry-native.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable berry-librespot berry-native
+sudo systemctl enable berry-wifi berry-librespot berry-native
 
 # ============================================
 # 6. Setup backlight permissions (for sleep mode)
@@ -163,6 +149,11 @@ echo "============================================"
 echo ""
 echo "Next steps:"
 echo "  1. Reboot: sudo reboot"
-echo "  2. Services start automatically after reboot"
-echo "  3. Berry will run fullscreen on the display"
+echo "  2. Berry starts automatically in fullscreen"
+echo "  3. Open Spotify on your phone"
+echo "  4. Connect to 'Berry' speaker"
+echo ""
+echo "If WiFi disconnects:"
+echo "  Berry creates a 'Berry-Setup' hotspot"
+echo "  Connect to configure WiFi"
 echo ""

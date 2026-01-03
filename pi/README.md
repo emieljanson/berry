@@ -23,18 +23,40 @@ sudo reboot
 
 ---
 
+## First Time Setup
+
+After reboot, Berry shows a setup screen:
+
+1. Open **Spotify** on your phone
+2. Tap the **speaker icon** (bottom left)
+3. Select **"Berry"** from the list
+4. Berry is now connected! 🎵
+
+---
+
+## WiFi Setup
+
+Berry automatically handles WiFi issues:
+
+- **Has WiFi?** → Berry starts normally
+- **No WiFi?** → Berry creates a hotspot **"Berry-Setup"**
+
+To configure WiFi:
+1. Connect your phone to **"Berry-Setup"** hotspot
+2. A browser opens automatically
+3. Select your WiFi network
+4. Done! Berry connects and starts
+
+---
+
 ## What the install script does
 
 - ✅ Installs go-librespot (Spotify Connect)
 - ✅ Installs Python dependencies (Pygame, Pillow, etc.)
-- ✅ Prompts for Spotify login (first time)
+- ✅ Installs WiFi Connect (captive portal)
 - ✅ Configures auto-start on boot
 - ✅ Configures auto-updates (hourly)
 - ✅ Starts Berry
-
-After reboot:
-- Berry starts automatically in fullscreen
-- Touch to control
 
 ---
 

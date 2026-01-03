@@ -1,0 +1,16 @@
+[Unit]
+Description=Berry WiFi Setup Portal
+DefaultDependencies=no
+Before=network-online.target berry-librespot.service berry-native.service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/admin/berry/pi/wifi-check.sh
+RemainAfterExit=yes
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target
+
