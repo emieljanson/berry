@@ -49,18 +49,7 @@ done
 sudo systemctl daemon-reload
 
 # ============================================
-# 4. Update autostart files
-# ============================================
-echo "Updating autostart..."
-mkdir -p ~/.config/autostart
-for f in ~/berry/pi/autostart/*.desktop; do
-  [ -f "$f" ] || continue
-  name=$(basename "$f")
-  ln -sf "$f" ~/.config/autostart/"$name"
-done
-
-# ============================================
-# 5. Restart services
+# 4. Restart services
 # ============================================
 echo "Restarting services..."
 sudo systemctl restart berry-librespot berry-backend berry-frontend

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Berry Pi Development Script
-# Syncs files and streams logs from the Raspberry Pi
+# Choose between native (Pygame) or web mode
 
 set -e
 
@@ -18,16 +18,27 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
 
-# Verbose mode (show all logs including progress saves)
+# Mode selection
+MODE=""
 VERBOSE=false
+LOCAL_PID=""
+LOG_PID=""
 
 # Parse arguments
 while [[ "$#" -gt 0 ]]; do
     case $1 in
+        native|n) MODE="native" ;;
+        web|w) MODE="web" ;;
         -v|--verbose) VERBOSE=true ;;
         -h|--help) 
-            echo "Usage: ./dev-pi.sh [-v|--verbose]"
-            echo "  -v, --verbose  Show all logs (including progress saves)"
+            echo "Usage: ./dev-pi.sh [native|web] [-v|--verbose]"
+            echo ""
+            echo "Modes:"
+            echo "  native, n   Run native Pygame UI (no browser)"
+            echo "  web, w      Run web UI in Chromium kiosk"
+            echo ""
+            echo "Options:"
+            echo "  -v, --verbose  Show all logs"
             exit 0
             ;;
         *) echo "Unknown option: $1"; exit 1 ;;
@@ -36,205 +47,313 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 echo -e "${GREEN}🍓 Berry Pi Development${NC}"
-if [ "$VERBOSE" = true ]; then
-    echo -e "${YELLOW}(Verbose mode)${NC}"
-fi
 echo "========================"
 echo ""
 
-# Cleanup function - stop dev processes and restart systemd services
+# If no mode specified, show menu
+if [ -z "$MODE" ]; then
+    echo "Select mode:"
+    echo ""
+    echo -e "  ${CYAN}1)${NC} ${GREEN}native${NC} - Pygame UI (lightweight, no browser)"
+    echo -e "  ${CYAN}2)${NC} ${BLUE}web${NC}    - Web UI in Chromium kiosk"
+    echo ""
+    read -p "Enter choice [1/2]: " choice
+    
+    case $choice in
+        1|native|n) MODE="native" ;;
+        2|web|w) MODE="web" ;;
+        *) 
+            echo -e "${RED}Invalid choice${NC}"
+            exit 1
+            ;;
+    esac
+    echo ""
+fi
+
+echo -e "Mode: ${GREEN}$MODE${NC}"
+if [ "$VERBOSE" = true ]; then
+    echo -e "${YELLOW}(Verbose mode)${NC}"
+fi
+echo ""
+
+# Cleanup function
 cleanup() {
     echo ""
-    echo -e "${YELLOW}🛑 Stopping dev services on Pi...${NC}"
-    # Kill the log streaming SSH session
+    echo -e "${YELLOW}🛑 Stopping everything...${NC}"
     kill $LOG_PID 2>/dev/null || true
-    ssh $PI_HOST "pkill -9 -f 'go-librespot' 2>/dev/null; pkill -9 -f 'node.*server' 2>/dev/null; pkill -9 -f 'vite' 2>/dev/null" 2>/dev/null || true
-    echo -e "${BLUE}🔄 Restarting systemd services...${NC}"
-    ssh $PI_HOST "sudo systemctl start berry-librespot berry-backend berry-frontend" 2>/dev/null || true
-    echo -e "${GREEN}✓ Back to production mode${NC}"
+    
+    # Kill local processes
+    pkill -f "berry.py" 2>/dev/null || true
+    kill $LOCAL_PID 2>/dev/null || true
+    
+    # Kill ALL Pi processes
+    ssh $PI_HOST "sudo systemctl stop berry-librespot berry-backend berry-frontend 2>/dev/null; pkill -9 -f 'berry.py' 2>/dev/null; pkill -9 -f 'go-librespot' 2>/dev/null; pkill -9 -f 'node' 2>/dev/null; pkill -9 -f 'vite' 2>/dev/null" 2>/dev/null || true
+    
+    echo -e "${GREEN}✓ All stopped${NC}"
     exit 0
 }
 trap cleanup SIGINT SIGTERM
 
-# Check if fswatch is installed
+# Check if fswatch is installed (for file watching)
 if ! command -v fswatch &> /dev/null; then
     echo -e "${YELLOW}Installing fswatch...${NC}"
     brew install fswatch
 fi
 
-# Setup SSH key if not already done (avoids password prompts)
+# Setup SSH key if needed
 if ! ssh -o BatchMode=yes -o ConnectTimeout=5 $PI_HOST "exit" 2>/dev/null; then
     echo -e "${YELLOW}🔑 Setting up SSH key (one-time setup)...${NC}"
     echo -e "${YELLOW}   You'll need to enter the Pi password once.${NC}"
     
-    # Generate SSH key if it doesn't exist
     if [ ! -f ~/.ssh/id_ed25519 ]; then
         echo -e "${BLUE}Generating SSH key...${NC}"
         ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
     fi
     
-    # Copy key to Pi
     ssh-copy-id -i ~/.ssh/id_ed25519.pub $PI_HOST
-    
-    echo -e "${GREEN}✓ SSH key installed - no more password prompts!${NC}"
+    echo -e "${GREEN}✓ SSH key installed${NC}"
     echo ""
 fi
 
 # Initial sync
-echo -e "${BLUE}📦 Initial sync to Pi...${NC}"
-rsync -avz --exclude 'node_modules' --exclude '.git' --exclude '.cursor' --exclude 'backend/data' \
+echo -e "${BLUE}📦 Syncing files to Pi...${NC}"
+rsync -avz --exclude 'node_modules' --exclude '.git' --exclude '.cursor' --exclude 'backend/data' --exclude 'native/venv' \
     "$LOCAL_DIR/" "$PI_HOST:$PI_DIR/"
 echo -e "${GREEN}✓ Synced${NC}"
 echo ""
 
-# Start services on Pi via SSH
-echo -e "${BLUE}🚀 Starting services on Pi...${NC}"
-
-# Stop systemd services and existing processes, then start fresh
-ssh -t $PI_HOST << 'ENDSSH'
-# Stop systemd services first (they auto-restart, so must stop them)
-echo "Stopping systemd services..."
-sudo systemctl stop berry-backend berry-librespot berry-frontend 2>/dev/null || true
-
-# Aggressively kill ALL node and librespot processes (use -9 for force kill)
-echo "Killing existing processes..."
-pkill -9 -f "go-librespot" 2>/dev/null || true
-pkill -9 -f "node" 2>/dev/null || true  
-pkill -9 -f "vite" 2>/dev/null || true
-sleep 2
-
-# Double-check no node processes remain
-while pgrep -f "node.*server" > /dev/null; do
-    echo "Waiting for node processes to die..."
-    pkill -9 -f "node" 2>/dev/null || true
-    sleep 1
-done
-
-# Clear old logs
-> /tmp/go-librespot.log
-> /tmp/berry-backend.log
-> /tmp/berry-frontend.log
-
-# Start go-librespot in background
-echo "Starting go-librespot..."
-cd ~
-nohup go-librespot --config_dir ~/.config/go-librespot > /tmp/go-librespot.log 2>&1 &
-LIBRESPOT_PID=$!
-echo "  go-librespot PID: $LIBRESPOT_PID"
-sleep 2
-
-# Start backend with --watch for auto-restart on file changes
-echo "Starting backend..."
-cd ~/berry/backend
-nohup node --watch server.js > /tmp/berry-backend.log 2>&1 &
-BACKEND_PID=$!
-echo "  backend PID: $BACKEND_PID"
-sleep 2
-
-# Start frontend in background  
-echo "Starting frontend..."
-cd ~/berry/frontend
-nohup npm run dev -- --host > /tmp/berry-frontend.log 2>&1 &
-FRONTEND_PID=$!
-echo "  frontend PID: $FRONTEND_PID"
-sleep 3
-
-echo ""
-echo "✅ All services started!"
-echo ""
-echo "URLs:"
-echo "  Frontend:  http://berry.local:3000"
-echo "  Backend:   http://berry.local:3001"
-echo "  Librespot: http://berry.local:3678"
-ENDSSH
-
-echo ""
-echo -e "${GREEN}✓ Services running on Pi${NC}"
-echo ""
-echo "=================================="
-echo -e "${CYAN}📋 Log Legend:${NC}"
-echo -e "  ${CYAN}📱 [app]${NC}      - Frontend App.jsx"
-echo -e "  ${CYAN}🎠 [carousel]${NC} - Frontend Carousel"
-echo -e "  ${CYAN}⏱️ [timer]${NC}    - Playback timer"
-echo -e "  ${MAGENTA}💾 [progress]${NC} - Backend save progress"
-echo -e "  ${GREEN}▶️ [play]${NC}     - Play requests"
-echo -e "  ${RED}❌${NC}            - Errors"
-echo "=================================="
-echo ""
-
-# Stream logs from Pi in background
-# This tails all relevant logs and formats them nicely
-ssh $PI_HOST 'tail -f /tmp/berry-backend.log /tmp/go-librespot.log 2>/dev/null' 2>/dev/null | while read -r line; do
-    # Skip noisy lines (always filtered)
-    case "$line" in
-        *"==> "*)
-            # File header from tail -f, skip
-            continue
-            ;;
-        *"failed getting output device delay"*)
-            # Harmless go-librespot warning on some audio setups
-            continue
-            ;;
-        *"time="*"level=debug"*)
-            # Skip debug logs from go-librespot
-            continue
-            ;;
-    esac
+# ============================================
+# NATIVE MODE
+# ============================================
+if [ "$MODE" = "native" ]; then
+    echo -e "${BLUE}🚀 Starting Native mode...${NC}"
     
-    # Verbose mode: show everything except filtered lines above
-    if [ "$VERBOSE" = true ]; then
+    ssh -t $PI_HOST << 'ENDSSH'
+    # Stop ALL services and processes first
+    echo "Stopping all services..."
+    sudo systemctl stop berry-backend berry-frontend berry-librespot 2>/dev/null || true
+    pkill -9 -f "node" 2>/dev/null || true
+    pkill -9 -f "vite" 2>/dev/null || true
+    pkill -9 -f "chromium" 2>/dev/null || true
+    pkill -9 -f "go-librespot" 2>/dev/null || true
+    sleep 1
+    
+    # Start librespot only (no backend needed - CatalogManager handles save/delete)
+    echo "Starting go-librespot..."
+    sudo systemctl start berry-librespot
+    sleep 2
+    
+    # Verify it's running
+    if pgrep -f "go-librespot" > /dev/null; then
+        echo "✓ go-librespot running"
+    else
+        echo "❌ go-librespot failed to start"
+        journalctl -u berry-librespot -n 5 --no-pager
+    fi
+    
+    # Setup Python environment
+    echo "Setting up Python environment..."
+    cd ~/berry/native
+    
+    if [ ! -d "venv" ]; then
+        python3 -m venv venv
+    fi
+    
+    source venv/bin/activate
+    pip install -q -r requirements.txt 2>/dev/null
+    
+    # Create data directory
+    mkdir -p data/images
+    
+    # Clear log
+    > /tmp/berry-native.log
+    
+    # Start the native app in fullscreen (unbuffered output for live logs)
+    echo ""
+    echo "Starting Berry Native (fullscreen)..."
+    nohup python -u berry.py --fullscreen > /tmp/berry-native.log 2>&1 &
+    BERRY_PID=$!
+    echo "  Berry PID: $BERRY_PID"
+    sleep 2
+    
+    if ps -p $BERRY_PID > /dev/null; then
+        echo ""
+        echo "✅ Berry Native running on Pi!"
+    else
+        echo "❌ Failed to start Berry Native on Pi"
+        cat /tmp/berry-native.log
+    fi
+ENDSSH
+    
+    echo ""
+    echo -e "${GREEN}✓ Berry Native running on Pi${NC}"
+    echo ""
+    echo "=================================="
+    echo -e "  ${GREEN}🎮 Display${NC}  Fullscreen on Pi"
+    echo -e "  ${CYAN}🎵 Audio${NC}    Pi speakers"  
+    echo -e "  ${BLUE}🔄 Sync${NC}     Auto on file changes"
+    echo "=================================="
+    echo ""
+    
+    # Wait a moment for the app to start writing logs
+    sleep 2
+    
+    # Stream Pi logs (native app)
+    echo -e "${CYAN}📋 Streaming logs...${NC}"
+    ssh $PI_HOST 'tail -f /tmp/berry-native.log 2>/dev/null' 2>/dev/null | while read -r line; do
         case "$line" in
-            *"📱"*|*"🎠"*|*"⏱️"*|*"▶️"*|*"💾"*|*"🔌"*|*"📤"*|*"📥"*|*"↩️"*)
+            *"👆"*|*"→"*)
+                # Touch events - always show
                 echo -e "${CYAN}$line${NC}"
                 ;;
-            *"error"*|*"Error"*|*"ERROR"*|*"❌"*)
-                echo -e "${RED}$line${NC}"
-                ;;
-            *"✅"*|*"✓"*)
+            *"📡"*|*"📂"*|*"✅"*|*"✓"*)
+                # Status/success messages
                 echo -e "${GREEN}$line${NC}"
                 ;;
-            *"⚠"*|*"warn"*|*"Warn"*)
+            *"❌"*|*"Error"*|*"error"*|*"ERROR"*|*"Traceback"*|*"Exception"*)
+                # Errors - always show
+                echo -e "${RED}$line${NC}"
+                ;;
+            *"⚠"*)
                 echo -e "${YELLOW}$line${NC}"
                 ;;
             *)
-                if [[ ! "$line" =~ ^[[:space:]]*$ ]] && [[ ${#line} -gt 5 ]]; then
+                # Show everything in native mode for debugging
+                if [[ ! "$line" =~ ^[[:space:]]*$ ]] && [[ ${#line} -gt 2 ]]; then
                     echo "$line"
                 fi
                 ;;
         esac
-        continue
-    fi
+    done &
+    LOG_PID=$!
     
-    # Normal mode: only show important stuff (clean output)
-    case "$line" in
-        *"time="*"level=info"*"authenticated"*)
-            echo -e "${GREEN}✓ Spotify authenticated${NC}"
-            ;;
-        *"time="*)
-            # Skip all other go-librespot time= logs in normal mode
-            ;;
-        *"error"*|*"Error"*|*"ERROR"*|*"❌"*)
-            # Always show errors
-            echo -e "${RED}$line${NC}"
-            ;;
-        *"🍓 Berry backend"*|*"🌐 Frontend WebSocket"*)
-            # Startup messages
-            echo -e "${GREEN}$line${NC}"
-            ;;
-        *"📸 Saved new cover"*)
-            # New album added
-            echo -e "${BLUE}$line${NC}"
-            ;;
-        *"🗑️ Removed from catalog"*)
-            # Album removed
-            echo -e "${YELLOW}$line${NC}"
-            ;;
-        *)
-            # Skip everything else in normal mode
-            ;;
-    esac
-done &
-LOG_PID=$!
+# ============================================
+# WEB MODE
+# ============================================
+else
+    echo -e "${BLUE}🚀 Starting Web mode...${NC}"
+    
+    ssh -t $PI_HOST << 'ENDSSH'
+    # Stop any native processes
+    pkill -9 -f "berry.py" 2>/dev/null || true
+    
+    # Stop systemd services first
+    echo "Stopping systemd services..."
+    sudo systemctl stop berry-backend berry-librespot berry-frontend 2>/dev/null || true
+    
+    # Kill existing processes
+    echo "Killing existing processes..."
+    pkill -9 -f "go-librespot" 2>/dev/null || true
+    pkill -9 -f "node" 2>/dev/null || true  
+    pkill -9 -f "vite" 2>/dev/null || true
+    sleep 2
+    
+    # Clear old logs
+    > /tmp/go-librespot.log
+    > /tmp/berry-backend.log
+    > /tmp/berry-frontend.log
+    
+    # Start go-librespot
+    echo "Starting go-librespot..."
+    cd ~
+    nohup go-librespot --config_dir ~/.config/go-librespot > /tmp/go-librespot.log 2>&1 &
+    LIBRESPOT_PID=$!
+    echo "  go-librespot PID: $LIBRESPOT_PID"
+    sleep 2
+    
+    # Start backend
+    echo "Starting backend..."
+    cd ~/berry/backend
+    nohup node --watch server.js > /tmp/berry-backend.log 2>&1 &
+    BACKEND_PID=$!
+    echo "  backend PID: $BACKEND_PID"
+    sleep 2
+    
+    # Start frontend
+    echo "Starting frontend..."
+    cd ~/berry/frontend
+    nohup npm run dev -- --host > /tmp/berry-frontend.log 2>&1 &
+    FRONTEND_PID=$!
+    echo "  frontend PID: $FRONTEND_PID"
+    sleep 3
+    
+    echo ""
+    echo "✅ All services started!"
+    echo ""
+    echo "URLs:"
+    echo "  Frontend:  http://berry.local:3000"
+    echo "  Backend:   http://berry.local:3001"
+    echo "  Librespot: http://berry.local:3678"
+ENDSSH
+    
+    echo ""
+    echo -e "${GREEN}✓ Web mode active${NC}"
+    echo ""
+    echo "=================================="
+    echo -e "${CYAN}📋 Log Legend:${NC}"
+    echo -e "  ${CYAN}📱 [app]${NC}      - Frontend App.jsx"
+    echo -e "  ${CYAN}🎠 [carousel]${NC} - Frontend Carousel"
+    echo -e "  ${MAGENTA}💾 [progress]${NC} - Backend save progress"
+    echo -e "  ${GREEN}▶️ [play]${NC}     - Play requests"
+    echo -e "  ${RED}❌${NC}            - Errors"
+    echo "=================================="
+    echo ""
+    
+    # Stream logs
+    ssh $PI_HOST 'tail -f /tmp/berry-backend.log /tmp/go-librespot.log 2>/dev/null' 2>/dev/null | while read -r line; do
+        case "$line" in
+            *"==> "*)
+                continue
+                ;;
+            *"failed getting output device delay"*)
+                continue
+                ;;
+            *"time="*"level=debug"*)
+                continue
+                ;;
+        esac
+        
+        if [ "$VERBOSE" = true ]; then
+            case "$line" in
+                *"📱"*|*"🎠"*|*"⏱️"*|*"▶️"*|*"💾"*|*"🔌"*|*"📤"*|*"📥"*|*"↩️"*)
+                    echo -e "${CYAN}$line${NC}"
+                    ;;
+                *"error"*|*"Error"*|*"ERROR"*|*"❌"*)
+                    echo -e "${RED}$line${NC}"
+                    ;;
+                *"✅"*|*"✓"*)
+                    echo -e "${GREEN}$line${NC}"
+                    ;;
+                *)
+                    if [[ ! "$line" =~ ^[[:space:]]*$ ]] && [[ ${#line} -gt 5 ]]; then
+                        echo "$line"
+                    fi
+                    ;;
+            esac
+        else
+            case "$line" in
+                *"time="*"level=info"*"authenticated"*)
+                    echo -e "${GREEN}✓ Spotify authenticated${NC}"
+                    ;;
+                *"time="*)
+                    ;;
+                *"error"*|*"Error"*|*"ERROR"*|*"❌"*)
+                    echo -e "${RED}$line${NC}"
+                    ;;
+                *"🍓 Berry backend"*|*"🌐 Frontend WebSocket"*)
+                    echo -e "${GREEN}$line${NC}"
+                    ;;
+                *"📸 Saved new cover"*)
+                    echo -e "${BLUE}$line${NC}"
+                    ;;
+                *"🗑️ Removed from catalog"*)
+                    echo -e "${YELLOW}$line${NC}"
+                    ;;
+            esac
+        fi
+    done &
+    LOG_PID=$!
+fi
 
 # Watch for changes and sync
 echo -e "${BLUE}👀 Watching for file changes...${NC}"
@@ -248,9 +367,8 @@ fswatch -o "$LOCAL_DIR" \
     --exclude '\.cursor' \
     --exclude '\.DS_Store' \
     --exclude 'backend/data' \
-    --exclude 'CAROUSEL_SPEC.md' \
+    --exclude 'native/venv' \
     | while read; do
-    # Debounce: skip if less than 1 second since last sync
     NOW=$(date +%s)
     if [ $((NOW - LAST_SYNC)) -lt 1 ]; then
         continue
@@ -258,11 +376,9 @@ fswatch -o "$LOCAL_DIR" \
     LAST_SYNC=$NOW
     
     echo -e "${BLUE}📦 Syncing...${NC}"
-    rsync -avz --exclude 'node_modules' --exclude '.git' --exclude '.cursor' --exclude 'backend/data' \
+    rsync -avz --exclude 'node_modules' --exclude '.git' --exclude '.cursor' --exclude 'backend/data' --exclude 'native/venv' \
         "$LOCAL_DIR/" "$PI_HOST:$PI_DIR/" 2>/dev/null
-    echo -e "${GREEN}✓ Synced $(date +%H:%M:%S)${NC}"
-    # node --watch on Pi auto-restarts backend when it detects file changes
+    echo -e "${GREEN}✓ Synced $(date +%H:%M:%S) - Ctrl+C and restart to apply${NC}"
 done
 
-# Cleanup log streaming
 kill $LOG_PID 2>/dev/null || true

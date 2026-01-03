@@ -101,7 +101,6 @@ fi
 # ============================================
 echo "📦 Installing system packages..."
 sudo apt-get update
-sudo apt-get install -y unclutter
 
 # ============================================
 # 5. Install npm dependencies
@@ -127,29 +126,22 @@ sudo systemctl daemon-reload
 sudo systemctl enable berry-librespot berry-backend berry-frontend
 
 # ============================================
-# 8. Setup autostart (symlinks)
-# ============================================
-echo "🖥️ Setting up autostart..."
-mkdir -p ~/.config/autostart
-ln -sf ~/berry/pi/autostart/berry-kiosk.desktop ~/.config/autostart/
-ln -sf ~/berry/pi/autostart/berry-unclutter.desktop ~/.config/autostart/
-
-# ============================================
-# 9. Setup backlight permissions (for sleep mode)
+# 8. Setup backlight permissions (for sleep mode)
 # ============================================
 echo "💡 Setting up backlight permissions..."
 sudo usermod -aG video $USER 2>/dev/null || true
-echo 'SUBSYSTEM=="backlight", ACTION=="add", RUN+="/bin/chmod 666 /sys/class/backlight/rpi_backlight/bl_power"' | sudo tee /etc/udev/rules.d/99-backlight.rules > /dev/null
+# Works for any touchscreen (rpi_backlight, 10-0045, etc.)
+echo 'SUBSYSTEM=="backlight", RUN+="/bin/chmod 666 /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power"' | sudo tee /etc/udev/rules.d/99-backlight.rules > /dev/null
 
 # ============================================
-# 10. Setup auto-update cron job
+# 9. Setup auto-update cron job
 # ============================================
 echo "🔄 Setting up auto-updates..."
 chmod +x ~/berry/pi/auto-update.sh
 (crontab -l 2>/dev/null | grep -v "berry/pi/auto-update"; echo "0 * * * * ~/berry/pi/auto-update.sh >> ~/berry-update.log 2>&1") | crontab -
 
 # ============================================
-# 11. Start services
+# 10. Start services
 # ============================================
 echo "🚀 Starting services..."
 sudo systemctl start berry-librespot berry-backend berry-frontend
@@ -161,6 +153,6 @@ echo "============================================"
 echo ""
 echo "Next steps:"
 echo "  1. Reboot: sudo reboot"
-echo "  2. After reboot, Berry starts automatically"
-echo "  3. Open http://$(hostname).local:3000"
+echo "  2. Services start automatically after reboot"
+echo "  3. Open Chrome to http://localhost:3000"
 echo ""
