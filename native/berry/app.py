@@ -604,8 +604,18 @@ class Berry:
                 pending = self._pending_play
                 self._pending_play = None
             
-            # Execute pending request if any
+            # Execute pending request with debounce delay
             if pending:
+                # Wait a bit to allow newer requests to override
+                time.sleep(0.5)
+                
+                # Check again if there's a newer pending request
+                with self._play_lock:
+                    if self._pending_play:
+                        # Newer request came in, use that instead
+                        pending = self._pending_play
+                        self._pending_play = None
+                
                 logger.debug(f'Executing queued request: {pending[0]}')
                 self._play_item(pending[0], pending[1])
     

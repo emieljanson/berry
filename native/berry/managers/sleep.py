@@ -23,6 +23,8 @@ class SleepManager:
         
         if self.backlight_path:
             logger.info(f'Backlight detected: {self.backlight_path}')
+            # Ensure backlight is ON at startup (in case previous session crashed while sleeping)
+            self._set_backlight(True)
         else:
             logger.info('No backlight found (not on Pi?)')
     
