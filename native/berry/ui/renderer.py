@@ -201,16 +201,22 @@ class Renderer:
     
     def _draw_empty_state(self):
         """Draw empty catalog state."""
-        icon = self.font_large.render('🎧', True, COLORS['text_primary'])
-        icon_rect = icon.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 40))
-        self.screen.blit(icon, icon_rect)
+        # Draw plus icon
+        icon = self.icons.get('plus')
+        if icon:
+            icon_size = 64
+            scaled_icon = pygame.transform.smoothscale(icon, (icon_size, icon_size))
+            tinted = scaled_icon.copy()
+            tinted.fill(COLORS['accent'], special_flags=pygame.BLEND_RGB_MULT)
+            icon_rect = tinted.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 40))
+            self.screen.blit(tinted, icon_rect)
         
         title = self.font_large.render('No music yet', True, COLORS['text_primary'])
-        title_rect = title.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20))
+        title_rect = title.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 30))
         self.screen.blit(title, title_rect)
         
         sub = self.font_medium.render('Play music via Spotify and tap + to add', True, COLORS['text_secondary'])
-        sub_rect = sub.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 60))
+        sub_rect = sub.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 70))
         self.screen.blit(sub, sub_rect)
     
     def _draw_track_info(self, item: Optional[CatalogItem], now_playing: NowPlaying):
@@ -287,17 +293,17 @@ class Renderer:
                 continue
             
             is_playlist = item.type == 'playlist' or 'playlist' in (item.uri or '')
-            has_multiple_images = item.images and len(item.images) > 1
+            has_playlist_images = is_playlist and item.images and len(item.images) >= 1
             
             if is_center:
-                if is_playlist and has_multiple_images:
+                if has_playlist_images:
                     cover = self.image_cache.get_composite(item.images, size)
                 else:
                     cover = self.image_cache.get(item.image, size)
                 center_cover_rect = (draw_x, draw_y, size, size)
                 center_item = item
             else:
-                if is_playlist and has_multiple_images:
+                if has_playlist_images:
                     cover = self.image_cache.get_composite_dimmed(item.images, size)
                 else:
                     cover = self.image_cache.get_dimmed(item.image, size)

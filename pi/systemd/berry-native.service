@@ -1,5 +1,5 @@
 [Unit]
-Description=Berry Backend API
+Description=Berry Music Player
 After=network-online.target berry-librespot.service
 Wants=network-online.target
 Requires=berry-librespot.service
@@ -7,13 +7,13 @@ Requires=berry-librespot.service
 [Service]
 Type=simple
 User=admin
-WorkingDirectory=/home/admin/berry/backend
-ExecStart=/usr/bin/node server.js
+WorkingDirectory=/home/admin/berry
+ExecStart=/home/admin/berry/venv/bin/python berry.py --fullscreen
 Restart=always
 RestartSec=5
-Environment=NODE_ENV=production
 Environment=HOME=/home/admin
+Environment=DISPLAY=:0
+Environment=SDL_VIDEODRIVER=kmsdrm
 
 [Install]
 WantedBy=multi-user.target
-

@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Berry Kiosk
-Comment=Berry Music Player Kiosk Mode
-Exec=/usr/bin/chromium-browser --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --disable-restore-session-state --no-first-run --start-fullscreen --autoplay-policy=no-user-gesture-required http://localhost:3000
-Terminal=false
-X-GNOME-Autostart-enabled=true
-

@@ -23,22 +23,17 @@ echo "$(date): Updates found on $BRANCH, applying..."
 git pull origin "$BRANCH" || exit 1
 
 # ============================================
-# 1. Update dependencies if package.json changed
+# 1. Update Python dependencies if requirements.txt changed
 # ============================================
-if git diff --name-only "$LOCAL" "$REMOTE" | grep -q "package.json"; then
-  echo "Updating dependencies..."
-  cd ~/berry/backend && npm install --production
-  cd ~/berry/frontend && npm install
+if git diff --name-only "$LOCAL" "$REMOTE" | grep -q "requirements.txt"; then
+  echo "Updating Python dependencies..."
+  cd ~/berry
+  source venv/bin/activate
+  pip install -q -r requirements.txt
 fi
 
 # ============================================
-# 2. Rebuild frontend
-# ============================================
-echo "Building frontend..."
-cd ~/berry/frontend && npm run build
-
-# ============================================
-# 3. Update systemd services
+# 2. Update systemd services
 # ============================================
 echo "Updating systemd services..."
 for f in ~/berry/pi/systemd/*.service; do
@@ -49,13 +44,13 @@ done
 sudo systemctl daemon-reload
 
 # ============================================
-# 4. Restart services
+# 3. Restart services
 # ============================================
 echo "Restarting services..."
-sudo systemctl restart berry-librespot berry-backend berry-frontend
+sudo systemctl restart berry-librespot berry-native
 
 # ============================================
-# 6. Run any migration script if present
+# 4. Run any migration script if present
 # ============================================
 if [ -f ~/berry/pi/migrate.sh ]; then
   echo "Running migration script..."

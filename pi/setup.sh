@@ -7,18 +7,7 @@ echo "🍓 Berry Setup Starting..."
 echo ""
 
 # ============================================
-# 1. Check/Install Node.js
-# ============================================
-if ! command -v node &> /dev/null; then
-  echo "📦 Installing Node.js..."
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-  sudo apt-get install -y nodejs
-else
-  echo "✅ Node.js already installed: $(node --version)"
-fi
-
-# ============================================
-# 2. Check/Install go-librespot
+# 1. Check/Install go-librespot
 # ============================================
 if ! command -v go-librespot &> /dev/null; then
   echo "📦 Installing go-librespot..."
@@ -34,7 +23,7 @@ else
 fi
 
 # ============================================
-# 3. Configure Spotify (if not done)
+# 2. Configure Spotify (if not done)
 # ============================================
 mkdir -p ~/.config/go-librespot
 
@@ -97,36 +86,39 @@ else
 fi
 
 # ============================================
-# 4. Install system packages
+# 3. Install system packages
 # ============================================
 echo "📦 Installing system packages..."
 sudo apt-get update
+sudo apt-get install -y python3-venv python3-pip libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev
 
 # ============================================
-# 5. Install npm dependencies
+# 4. Setup Python virtual environment
 # ============================================
-echo "📦 Installing npm dependencies..."
-cd ~/berry/backend && npm install
-cd ~/berry/frontend && npm install
+echo "🐍 Setting up Python environment..."
+cd ~/berry
+
+if [ ! -d "venv" ]; then
+  python3 -m venv venv
+fi
+
+source venv/bin/activate
+pip install -q -r requirements.txt
+
+# Create data directory
+mkdir -p data/images
 
 # ============================================
-# 6. Build frontend for production
-# ============================================
-echo "🔨 Building frontend..."
-cd ~/berry/frontend && npm run build
-
-# ============================================
-# 7. Setup systemd services (symlinks)
+# 5. Setup systemd services (symlinks)
 # ============================================
 echo "⚙️ Setting up systemd services..."
 sudo ln -sf ~/berry/pi/systemd/berry-librespot.service /etc/systemd/system/
-sudo ln -sf ~/berry/pi/systemd/berry-backend.service /etc/systemd/system/
-sudo ln -sf ~/berry/pi/systemd/berry-frontend.service /etc/systemd/system/
+sudo ln -sf ~/berry/pi/systemd/berry-native.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable berry-librespot berry-backend berry-frontend
+sudo systemctl enable berry-librespot berry-native
 
 # ============================================
-# 8. Setup backlight permissions (for sleep mode)
+# 6. Setup backlight permissions (for sleep mode)
 # ============================================
 echo "💡 Setting up backlight permissions..."
 sudo usermod -aG video $USER 2>/dev/null || true
@@ -134,14 +126,14 @@ sudo usermod -aG video $USER 2>/dev/null || true
 echo 'SUBSYSTEM=="backlight", RUN+="/bin/chmod 666 /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power"' | sudo tee /etc/udev/rules.d/99-backlight.rules > /dev/null
 
 # ============================================
-# 9. Setup auto-update cron job
+# 7. Setup auto-update cron job
 # ============================================
 echo "🔄 Setting up auto-updates..."
 chmod +x ~/berry/pi/auto-update.sh
 (crontab -l 2>/dev/null | grep -v "berry/pi/auto-update"; echo "0 * * * * ~/berry/pi/auto-update.sh >> ~/berry-update.log 2>&1") | crontab -
 
 # ============================================
-# 10. CPU power management (energy saving)
+# 8. CPU power management (energy saving)
 # ============================================
 echo "⚡ Configuring CPU power management..."
 # Use 'ondemand' governor for automatic frequency scaling
@@ -159,10 +151,10 @@ else
 fi
 
 # ============================================
-# 11. Start services
+# 9. Start services
 # ============================================
 echo "🚀 Starting services..."
-sudo systemctl start berry-librespot berry-backend berry-frontend
+sudo systemctl start berry-librespot berry-native
 
 echo ""
 echo "============================================"
@@ -172,5 +164,5 @@ echo ""
 echo "Next steps:"
 echo "  1. Reboot: sudo reboot"
 echo "  2. Services start automatically after reboot"
-echo "  3. Open Chrome to http://localhost:3000"
+echo "  3. Berry will run fullscreen on the display"
 echo ""

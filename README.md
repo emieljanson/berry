@@ -1,6 +1,6 @@
 # 🍓 Berry
 
-A simple music player for kids, running on a Raspberry Pi.
+A simple music player for kids, running on a Raspberry Pi with a touchscreen.
 
 ## Features
 
@@ -31,11 +31,35 @@ On your Mac, with a Pi on the network:
 ./dev-pi.sh
 ```
 
-This automatically syncs changes to the Pi.
+This automatically syncs changes to the Pi and streams logs.
+
+### Local development (no Pi)
+
+```bash
+./run.sh
+```
+
+## Project Structure
+
+```
+berry/
+├── berry/              # Python package
+│   ├── api/            # Spotify & catalog APIs
+│   ├── handlers/       # Event & touch handlers
+│   ├── managers/       # Carousel, sleep, etc.
+│   └── ui/             # Renderer & helpers
+├── data/               # Saved albums & images
+├── icons/              # UI icons
+├── pi/                 # Raspberry Pi setup
+│   ├── systemd/        # Service files
+│   └── setup.sh        # First-time setup
+├── berry.py            # Entry point
+├── requirements.txt    # Python dependencies
+└── run.sh              # Local dev launcher
+```
 
 ## Tech Stack
 
-- **Frontend:** React + Vite + Embla Carousel
-- **Backend:** Node.js + Express + WebSocket
+- **UI:** Python + Pygame
 - **Spotify:** go-librespot (Spotify Connect)
 - **Hardware:** Raspberry Pi + Touchscreen

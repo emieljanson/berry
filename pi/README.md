@@ -25,15 +25,16 @@ sudo reboot
 
 ## What the install script does
 
-- ✅ Installs Git, Node.js, go-librespot
+- ✅ Installs go-librespot (Spotify Connect)
+- ✅ Installs Python dependencies (Pygame, Pillow, etc.)
 - ✅ Prompts for Spotify login (first time)
 - ✅ Configures auto-start on boot
 - ✅ Configures auto-updates (hourly)
-- ✅ Builds and starts Berry
+- ✅ Starts Berry
 
 After reboot:
-- Berry starts automatically
-- Open http://berry.local:3000
+- Berry starts automatically in fullscreen
+- Touch to control
 
 ---
 
@@ -41,16 +42,16 @@ After reboot:
 
 ### Services
 ```bash
-sudo systemctl status berry-backend     # Status
-sudo systemctl restart berry-backend    # Restart
-journalctl -u berry-backend -f          # Logs
+sudo systemctl status berry-native      # Status
+sudo systemctl restart berry-native     # Restart
+journalctl -u berry-native -f           # Logs
 ```
 
 ### Manual update
 ```bash
 cd ~/berry && git pull
-npm run build --prefix frontend
-sudo systemctl restart berry-backend berry-frontend
+source venv/bin/activate && pip install -r requirements.txt
+sudo systemctl restart berry-native
 ```
 
 ### Update logs

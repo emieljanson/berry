@@ -1074,13 +1074,17 @@ class Berry:
             time.time() - self.last_progress_save > PROGRESS_SAVE_INTERVAL):
             self._save_playback_progress()
         
-        # Collect playlist covers
+        # Collect playlist covers and update UI if new cover added
         if (self.now_playing.playing and 
             'playlist' in (self.now_playing.context_uri or '')):
-            self.catalog_manager.collect_cover_for_playlist(
+            new_cover_added = self.catalog_manager.collect_cover_for_playlist(
                 self.now_playing.context_uri,
                 self.now_playing.track_cover
             )
+            if new_cover_added:
+                # Update temp_item with new covers and refresh UI
+                self._update_temp_item()
+                self.image_cache.invalidate_composites()
         
         # Check sleep
         self.sleep_manager.check_sleep(self.now_playing.playing)
