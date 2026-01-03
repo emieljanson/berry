@@ -64,9 +64,14 @@ class Renderer:
              is_sleeping: bool,
              connected: bool,
              volume_index: int,
-             delete_mode_id: Optional[str] = None) -> Optional[List[pygame.Rect]]:
+             delete_mode_id: Optional[str] = None,
+             pressed_button: Optional[str] = None,
+             loading: bool = False) -> Optional[List[pygame.Rect]]:
         """
         Main draw method.
+        
+        Args:
+            loading: If True, show pause icon even when paused (indicates pending play)
         
         Returns list of dirty rects for partial update, or None for full flip.
         """
@@ -80,11 +85,28 @@ class Renderer:
         self.add_button_rect = None
         self.delete_button_rect = None
         
+        # Get current item to check track info
+        current_item = items[selected_index] if selected_index < len(items) else None
+        
+        # Determine current track key (same logic as _draw_track_info)
+        if current_item:
+            if now_playing.context_uri == current_item.uri and now_playing.track_name:
+                current_track_key = (now_playing.track_name, now_playing.track_artist or '')
+            elif current_item.current_track and isinstance(current_item.current_track, dict):
+                name = current_item.current_track.get('name', current_item.name) or current_item.name
+                artist = current_item.current_track.get('artist', current_item.artist or '') or current_item.artist or ''
+                current_track_key = (name, artist)
+            else:
+                current_track_key = (current_item.name or 'Unknown', current_item.artist or '')
+        else:
+            current_track_key = None
+        
         # Check if we need a full redraw
         state_changed = (
             self._last_playing_state != now_playing.playing or
             self._last_selected_index != selected_index or
-            self._last_track_key is None
+            self._last_track_key is None or
+            self._last_track_key != current_track_key
         )
         
         if state_changed:
@@ -106,9 +128,6 @@ class Renderer:
             self._needs_full_redraw = True
             return None
         
-        # Get current item
-        current_item = items[selected_index] if selected_index < len(items) else None
-        
         # Calculate effective scroll position
         if dragging:
             drag_index_offset = -drag_offset / (COVER_SIZE + COVER_SPACING)
@@ -123,7 +142,9 @@ class Renderer:
             # Full redraw
             self._draw_background()
             self._draw_track_info(current_item, now_playing)
-            self._draw_controls(now_playing.playing, volume_index)
+            # Show pause icon when loading (paused but about to play)
+            show_as_playing = now_playing.playing or loading
+            self._draw_controls(show_as_playing, volume_index, pressed_button)
             
             # Cache static parts
             if self._static_layer is None:
@@ -330,31 +351,48 @@ class Renderer:
         progress_surf.blit(self._progress_cache[mask_key], (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
         self.screen.blit(progress_surf, (cover_x, cover_y))
     
-    def _draw_controls(self, is_playing: bool, volume_index: int):
-        """Draw playback control buttons."""
+    def _lighten_color(self, color: tuple, amount: float = 0.3) -> tuple:
+        """Make a color lighter by blending with white."""
+        r, g, b = color[:3]
+        return (
+            min(255, int(r + (255 - r) * amount)),
+            min(255, int(g + (255 - g) * amount)),
+            min(255, int(b + (255 - b) * amount)),
+        )
+    
+    def _draw_controls(self, is_playing: bool, volume_index: int, pressed_button: Optional[str] = None):
+        """Draw playback control buttons with optional pressed state feedback."""
         center_x = SCREEN_WIDTH // 2
         y = CONTROLS_Y
         btn_spacing = 145
         
-        # Prev button
+        # Base colors
+        gray_color = COLORS['bg_elevated']
+        play_color = COLORS['accent']
+        
+        # Prev button (gray -> lighter gray when pressed)
         prev_center = (center_x - btn_spacing, y)
-        draw_aa_circle(self.screen, COLORS['bg_elevated'], prev_center, BTN_SIZE // 2)
+        prev_color = self._lighten_color(gray_color) if pressed_button == 'prev' else gray_color
+        draw_aa_circle(self.screen, prev_color, prev_center, BTN_SIZE // 2)
         self._draw_icon('prev', prev_center)
         
-        # Play/Pause button
+        # Play/Pause button (purple -> lighter purple when pressed)
         play_center = (center_x, y)
-        draw_aa_circle(self.screen, COLORS['accent'], play_center, PLAY_BTN_SIZE // 2)
+        play_btn_color = self._lighten_color(play_color) if pressed_button == 'play' else play_color
+        draw_aa_circle(self.screen, play_btn_color, play_center, PLAY_BTN_SIZE // 2)
         self._draw_icon('pause' if is_playing else 'play', play_center)
         
-        # Next button
+        # Next button (gray -> lighter gray when pressed)
         next_center = (center_x + btn_spacing, y)
-        draw_aa_circle(self.screen, COLORS['bg_elevated'], next_center, BTN_SIZE // 2)
+        next_color = self._lighten_color(gray_color) if pressed_button == 'next' else gray_color
+        draw_aa_circle(self.screen, next_color, next_center, BTN_SIZE // 2)
         self._draw_icon('next', next_center)
         
-        # Volume button
+        # Volume button (gray -> lighter gray when pressed)
         right_cover_edge = center_x + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
         vol_center = (right_cover_edge - BTN_SIZE // 2, y)
-        draw_aa_circle(self.screen, COLORS['bg_elevated'], vol_center, BTN_SIZE // 2)
+        vol_color = self._lighten_color(gray_color) if pressed_button == 'volume' else gray_color
+        draw_aa_circle(self.screen, vol_color, vol_center, BTN_SIZE // 2)
         icon_key = VOLUME_LEVELS[volume_index]['icon']
         self._draw_icon(icon_key, vol_center)
     

@@ -10,6 +10,9 @@ from ..config import SWIPE_THRESHOLD, SWIPE_VELOCITY, LONG_PRESS_TIME
 class TouchHandler:
     """Handle swipe gestures for carousel navigation."""
     
+    # Movement threshold to consider it a swipe (not a long press)
+    SWIPE_MOVEMENT_THRESHOLD = 15
+    
     def __init__(self):
         self.start_x = 0
         self.start_y = 0
@@ -17,6 +20,7 @@ class TouchHandler:
         self.dragging = False
         self.drag_offset = 0  # Current drag offset in pixels
         self.long_press_fired = False  # Track if long press was triggered
+        self.is_swiping = False  # Track if user started swiping (moved beyond threshold)
     
     def on_down(self, pos: Tuple[int, int]):
         """Called on touch/mouse down."""
@@ -26,12 +30,18 @@ class TouchHandler:
         self.dragging = True
         self.drag_offset = 0
         self.long_press_fired = False
+        self.is_swiping = False
     
     def on_move(self, pos: Tuple[int, int]) -> float:
         """Called on touch/mouse move. Returns drag offset."""
         if not self.dragging:
             return 0
         self.drag_offset = pos[0] - self.start_x
+        
+        # Once user moves beyond threshold, mark as swiping (prevents long press)
+        if not self.is_swiping and abs(self.drag_offset) > self.SWIPE_MOVEMENT_THRESHOLD:
+            self.is_swiping = True
+        
         return self.drag_offset
     
     def check_long_press(self) -> bool:
@@ -39,8 +49,8 @@ class TouchHandler:
         if not self.dragging or self.long_press_fired:
             return False
         
-        # Only trigger if finger hasn't moved much
-        if abs(self.drag_offset) > 20:
+        # Never trigger long press if user has started swiping
+        if self.is_swiping:
             return False
         
         if time.time() - self.start_time >= LONG_PRESS_TIME:

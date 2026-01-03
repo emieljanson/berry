@@ -80,9 +80,9 @@ PROGRESS_BAR_HEIGHT = 8
 # ============================================
 
 VOLUME_LEVELS = [
-    {'level': 50, 'icon': 'volume_none'},
-    {'level': 75, 'icon': 'volume_low'},
-    {'level': 100, 'icon': 'volume_high'},
+    {'level': 60, 'icon': 'volume_none'},
+    {'level': 70, 'icon': 'volume_low'},
+    {'level': 80, 'icon': 'volume_high'},
 ]
 
 # ============================================
@@ -102,6 +102,13 @@ PROGRESS_EXPIRY_HOURS = 24  # Expire saved progress after 24 hours
 SWIPE_THRESHOLD = 50      # Minimum distance for swipe
 SWIPE_VELOCITY = 0.3      # Minimum velocity (pixels/ms)
 LONG_PRESS_TIME = 1.0     # Time for long press (seconds)
+
+# ============================================
+# AUTO-PAUSE (prevents music playing forever)
+# ============================================
+
+AUTO_PAUSE_TIMEOUT = 30 * 60  # 30 minutes in seconds
+AUTO_PAUSE_FADE_DURATION = 5.0  # Fade out over 5 seconds
 
 # ============================================
 # PERFORMANCE

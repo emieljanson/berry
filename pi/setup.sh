@@ -141,7 +141,25 @@ chmod +x ~/berry/pi/auto-update.sh
 (crontab -l 2>/dev/null | grep -v "berry/pi/auto-update"; echo "0 * * * * ~/berry/pi/auto-update.sh >> ~/berry-update.log 2>&1") | crontab -
 
 # ============================================
-# 10. Start services
+# 10. CPU power management (energy saving)
+# ============================================
+echo "⚡ Configuring CPU power management..."
+# Use 'ondemand' governor for automatic frequency scaling
+# CPU scales down to 600MHz in idle, up to 1.5GHz under load
+if [ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]; then
+  echo "ondemand" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null
+  echo "✅ CPU governor set to 'ondemand'"
+  
+  # Make it persistent across reboots
+  if ! grep -q "scaling_governor" /etc/rc.local 2>/dev/null; then
+    sudo sed -i '/^exit 0/i echo "ondemand" | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null' /etc/rc.local 2>/dev/null || true
+  fi
+else
+  echo "⚠️ CPU frequency scaling not available (VM or unsupported kernel)"
+fi
+
+# ============================================
+# 11. Start services
 # ============================================
 echo "🚀 Starting services..."
 sudo systemctl start berry-librespot berry-backend berry-frontend
