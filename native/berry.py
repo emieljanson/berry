@@ -1286,6 +1286,8 @@ class ImageCache:
             # Apply rounded corners
             radius = max(12, size // 25)
             surface = apply_rounded_corners(surface, radius)
+            # Convert to display format for faster blitting (was missing!)
+            surface = surface.convert_alpha()
             self.cache[cache_key] = surface
         except Exception as e:
             print(f'Error downloading image: {e}')
@@ -1378,6 +1380,9 @@ class Berry:
             self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), flags)
         self.clock = pygame.time.Clock()
         
+        # Log video driver info for performance debugging
+        self._log_video_driver_info()
+        
         # Hide mouse in fullscreen
         pygame.mouse.set_visible(not fullscreen)
         
@@ -1462,11 +1467,54 @@ class Berry:
         self._text_cache = {}
         self._last_track_key = None
         
+        # Partial screen update state (dirty rectangles)
+        self._needs_full_redraw = True
+        self._static_layer = None  # Cached background + track info + controls
+        self._carousel_rect = pygame.Rect(0, CAROUSEL_Y - 50, SCREEN_WIDTH, COVER_SIZE + 100)
+        self._last_playing_state = None  # Track play/pause changes
+        self._last_selected_index = None  # Track selection changes
+        
         # WebSocket
         self.events = EventListener(LIBRESPOT_WS, self._on_ws_update)
         
         # Running
         self.running = True
+    
+    def _log_video_driver_info(self):
+        """Log video driver and display info for performance debugging."""
+        # Get SDL video driver
+        video_driver = os.environ.get('SDL_VIDEODRIVER', 'default')
+        actual_driver = pygame.display.get_driver()
+        
+        # Get display info
+        info = pygame.display.Info()
+        hw_accel = info.hw if hasattr(info, 'hw') else 'unknown'
+        
+        # Check if running on Raspberry Pi
+        is_pi = os.path.exists('/proc/device-tree/model')
+        pi_model = ''
+        if is_pi:
+            try:
+                with open('/proc/device-tree/model', 'r') as f:
+                    pi_model = f.read().strip().replace('\x00', '')
+            except:
+                pi_model = 'Raspberry Pi'
+        
+        print('🖥️  Display Info:')
+        print(f'   Driver: {actual_driver} (requested: {video_driver})')
+        print(f'   Resolution: {info.current_w}x{info.current_h}')
+        print(f'   Hardware accel: {hw_accel}')
+        if is_pi:
+            print(f'   Device: {pi_model}')
+        
+        # Performance hints for Raspberry Pi
+        if is_pi and actual_driver not in ('kmsdrm', 'KMSDRM'):
+            print('')
+            print('⚡ Performance tip: Enable KMS/DRM for GPU acceleration:')
+            print('   1. Edit /boot/config.txt, add: dtoverlay=vc4-kms-v3d')
+            print('   2. Set env: export SDL_VIDEODRIVER=kmsdrm')
+            print('   3. Restart Berry')
+            print('')
     
     def _on_ws_update(self):
         """Called when WebSocket receives an event."""
@@ -1507,8 +1555,13 @@ class Berry:
             
             self._handle_events()
             self._update(dt)
-            self._draw()
-            pygame.display.flip()
+            dirty_rects = self._draw()
+            
+            # Use partial update when possible, full flip otherwise
+            if dirty_rects:
+                pygame.display.update(dirty_rects)
+            else:
+                pygame.display.flip()
         
         self.events.stop()
         pygame.quit()
@@ -1668,6 +1721,7 @@ class Berry:
         
         print(f'🗑️ Delete mode: {item.name}')
         self.delete_mode_id = item.id
+        self._needs_full_redraw = True
     
     def _save_temp_item(self):
         """Save the current temp item to catalog."""
@@ -1697,6 +1751,7 @@ class Berry:
             self.image_cache.preload_catalog(self.catalog.items)
             # Clear temp item (it's now in catalog)
             self.temp_item = None
+            self._needs_full_redraw = True
         
         self.saving = False
     
@@ -1738,6 +1793,7 @@ class Berry:
         
         self.delete_mode_id = None
         self.deleting = False
+        self._needs_full_redraw = True
     
     def _handle_touch_down(self, pos):
         """Handle touch/mouse down."""
@@ -1750,6 +1806,7 @@ class Berry:
         # Cancel delete mode if clicking elsewhere
         if self.delete_mode_id:
             self.delete_mode_id = None
+            self._needs_full_redraw = True
         
         # Only handle carousel swipes in carousel area
         if CAROUSEL_Y <= y <= CAROUSEL_Y + COVER_SIZE + 50:
@@ -2035,6 +2092,7 @@ class Berry:
             if self.temp_item:
                 self.temp_item = None
                 self._update_carousel_max_index()
+                self._needs_full_redraw = True
             return
         
         # Check if already in catalog
@@ -2043,6 +2101,7 @@ class Berry:
             if self.temp_item:
                 self.temp_item = None
                 self._update_carousel_max_index()
+                self._needs_full_redraw = True
             return
         
         # Create or update tempItem
@@ -2082,6 +2141,7 @@ class Berry:
             is_new = not self.temp_item or self.temp_item.uri != context_uri
             self.temp_item = new_temp
             self._update_carousel_max_index()
+            self._needs_full_redraw = True
             
             if is_new:
                 print(f'📎 TempItem: {new_temp.name} ({new_temp.type})')
@@ -2257,37 +2317,93 @@ class Berry:
         
         self.last_context_uri = context_uri
     
-    def _draw(self):
-        """Draw the application."""
+    def _draw(self) -> Optional[List[pygame.Rect]]:
+        """Draw the application. Returns list of dirty rects for partial update, or None for full flip."""
         # Sleep mode - show black screen only
         if self.sleep_manager.is_sleeping:
             self.screen.fill((0, 0, 0))
-            return
+            self._needs_full_redraw = True  # Need full redraw when waking
+            return None
         
         # Clear button hit rects (will be set if buttons are drawn)
         self._add_button_rect = None
         self._delete_button_rect = None
         
-        # Background with gradient
-        self._draw_background()
+        # Check if we need a full redraw (state changes)
+        current_playing = self.now_playing.playing
+        current_index = self.selected_index
         
-        # Connection status
+        state_changed = (
+            self._last_playing_state != current_playing or
+            self._last_selected_index != current_index or
+            self._last_track_key is None  # Track info changed
+        )
+        
+        if state_changed:
+            self._needs_full_redraw = True
+            self._last_playing_state = current_playing
+            self._last_selected_index = current_index
+        
+        # Check for special states that require full redraw
         if not self.connected:
+            self._draw_background()
             self._draw_disconnected()
-            return
+            self._needs_full_redraw = True
+            return None
         
         if not self.display_items:
+            self._draw_background()
             self._draw_empty_state()
-            return
+            self._needs_full_redraw = True
+            return None
         
-        # Carousel
-        self._draw_carousel()
+        # Determine if we're animating
+        is_animating = not self.carousel.settled or self.touch.dragging
         
-        # Track info
-        self._draw_track_info()
+        if self._needs_full_redraw:
+            # Full redraw: draw everything
+            self._draw_background()
+            self._draw_track_info()
+            self._draw_controls()
+            
+            # Cache the static parts BEFORE drawing carousel
+            # (background + track info + controls, but NOT carousel)
+            if self._static_layer is None:
+                self._static_layer = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+            self._static_layer.blit(self.screen, (0, 0))
+            
+            # Now draw carousel on top
+            self._draw_carousel()
+            
+            self._needs_full_redraw = False
+            return None  # Full flip
         
-        # Controls
-        self._draw_controls()
+        elif is_animating:
+            # Partial update: only redraw carousel area
+            # First restore the static layer for the carousel region (clean background)
+            self.screen.blit(self._static_layer, 
+                           self._carousel_rect.topleft, 
+                           self._carousel_rect)
+            
+            # Redraw carousel on top of clean background
+            self._draw_carousel()
+            
+            # Return dirty rect for partial update
+            return [self._carousel_rect]
+        
+        else:
+            # Idle: just update progress bar if playing
+            if self.now_playing.playing:
+                # Restore carousel area from static layer (clean background)
+                self.screen.blit(self._static_layer,
+                               self._carousel_rect.topleft,
+                               self._carousel_rect)
+                # Redraw carousel (includes progress bar)
+                self._draw_carousel()
+                return [self._carousel_rect]
+            
+            # Nothing to update
+            return []
     
     def _draw_background(self):
         """Draw pre-rendered background."""
