@@ -209,6 +209,7 @@ class Berry:
         self._paused_context_uri: Optional[str] = None
         self._loading_start_time: Optional[float] = None
         self._is_loading: bool = False
+        self._should_show_loading: bool = False
         
         # Button debouncing and feedback
         self._last_action_time = 0
@@ -397,6 +398,8 @@ class Berry:
             logger.info('Running in MOCK MODE')
         
         logger.info('Entering main loop...')
+        dt = 1.0 / 60  # Initial delta time
+        
         # Main loop
         while self.running:
             # Sleep mode: minimal CPU usage, only check for wake events
@@ -405,8 +408,18 @@ class Berry:
                 self._handle_events()
                 continue
             
-            # Dynamic FPS based on activity:
+            self._handle_events()
+            self._update(dt)
+            dirty_rects = self._draw()
+            
+            if dirty_rects:
+                pygame.display.update(dirty_rects)
+            else:
+                pygame.display.flip()
+            
+            # Dynamic FPS based on current activity (after update/draw):
             # - 60 FPS: carousel animation, touch dragging, loading spinner
+            #           (Rendering happens first, clock.tick limits upward only)
             # - 10 FPS: music playing (progress bar updates)
             # - 5 FPS: idle (fully static screen)
             is_animating = not self.carousel.settled or self.touch.dragging
@@ -424,15 +437,6 @@ class Berry:
             spike_threshold = max(0.1, target_frame_time * 1.2)
             if dt > spike_threshold:
                 logger.warning(f'Frame spike: {dt*1000:.0f}ms (target: {target_fps} FPS)')
-            
-            self._handle_events()
-            self._update(dt)
-            dirty_rects = self._draw()
-            
-            if dirty_rects:
-                pygame.display.update(dirty_rects)
-            else:
-                pygame.display.flip()
             
             self.perf_monitor.update(dt, is_animating)
             
@@ -454,7 +458,7 @@ class Berry:
                 logger.info(f'FPS: {avg_fps:.1f} | connected={self.connected} | playing={self.now_playing.playing} | loading={self._is_loading} | target={log_target_fps}')
                 
                 # Warn if FPS is significantly below target:
-                # - Target 60 FPS (animations): warn if < 30 FPS
+                # - Target 60 FPS (animations): warn if < 30 FPS (50% below)
                 # - Target 10 FPS (playing): warn if < 8 FPS (20% below)
                 # - Target 5 FPS (idle): warn if < 4 FPS (20% below)
                 if not self.sleep_manager.is_sleeping:
@@ -915,6 +919,7 @@ class Berry:
         
         if self.now_playing.playing:
             logger.info('Pausing...')
+            self._play_in_progress = False  # Clear any pending play state
             threading.Thread(target=self.api.pause, daemon=True).start()
         elif self.now_playing.paused:
             logger.info('Resuming...')
@@ -1408,38 +1413,51 @@ class Berry:
         
         # Check sleep
         self.sleep_manager.check_sleep(self.now_playing.playing)
-    
-    def _draw(self):
-        """Draw the UI."""
-        # Show loading state when:
-        # - Paused for navigation (waiting to switch to new item)
-        # - Play timer running (about to auto-play)
-        # - Play request in progress (API call to librespot)
-        # - Recently made play request but track hasn't started playing yet
-        recent_play_request = (self.last_user_play_time > 0 and 
-                              time.time() - self.last_user_play_time < 5.0 and
-                              self.last_user_play_uri is not None)
-        waiting_for_playback = (recent_play_request and 
-                               (not self.now_playing.playing or 
-                                self.now_playing.context_uri != self.last_user_play_uri))
         
-        should_show_loading = (self._paused_for_navigation or 
-                               self.play_timer.item is not None or 
-                               self._play_in_progress or
-                               waiting_for_playback)
+        # Update loading state (calculated here so FPS decision can use it)
+        self._update_loading_state()
+    
+    def _update_loading_state(self):
+        """Calculate loading state for spinner display."""
+        # Get current selected item
+        current_item = self.display_items[self.selected_index] if self.selected_index < len(self.display_items) else None
+        current_uri = current_item.uri if current_item else None
+        
+        # Check if the currently selected item is actually playing
+        selected_is_playing = (
+            self.now_playing.playing and 
+            current_uri and 
+            self.now_playing.context_uri == current_uri
+        )
+        
+        # Clear play_in_progress when playback has successfully started
+        if selected_is_playing and self._play_in_progress:
+            self._play_in_progress = False
+        
+        # Show loading when:
+        # - Paused for navigation (swiped away from playing item)
+        # - Play timer running (about to auto-play)
+        # - Play request in progress (waiting for playback to start)
+        self._should_show_loading = (
+            self._paused_for_navigation or 
+            self.play_timer.item is not None or 
+            self._play_in_progress
+        )
         
         # Track loading start time for 200ms delay
-        if should_show_loading:
+        if self._should_show_loading:
             if self._loading_start_time is None:
                 self._loading_start_time = time.time()
         else:
             self._loading_start_time = None
         
         # Only show spinner after 200ms delay to avoid flicker
-        self._is_loading = (should_show_loading and 
+        self._is_loading = (self._should_show_loading and 
                            self._loading_start_time is not None and
                            time.time() - self._loading_start_time > 0.2)
-        
+    
+    def _draw(self):
+        """Draw the UI."""
         return self.renderer.draw(
             items=self.display_items,
             selected_index=self.selected_index,
@@ -1453,7 +1471,7 @@ class Berry:
             delete_mode_id=self.delete_mode_id,
             pressed_button=self._pressed_button,
             loading=self._is_loading,  # Spinner (with 200ms delay)
-            pending_play=should_show_loading,  # Play button (immediate)
+            pending_play=self._should_show_loading,  # Play button (immediate)
             needs_setup=self.needs_setup,
         )
 

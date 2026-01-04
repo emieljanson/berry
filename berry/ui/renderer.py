@@ -42,7 +42,7 @@ class Renderer:
         self._last_track_key: Optional[Tuple[str, str]] = None
         self._spinner_cache: Dict[int, List[pygame.Surface]] = {}  # size -> list of frames
         self._spinner_overlay_cache: Dict[int, pygame.Surface] = {}  # size -> overlay
-        self._spinner_start_time: Optional[float] = None  # Track when spinner started
+        self._spinner_frame_idx: int = 0  # Simple frame counter for consistent rotation
         
         # Partial update state
         self._needs_full_redraw = True
@@ -100,10 +100,6 @@ class Renderer:
         # Clear button hit rects
         self.add_button_rect = None
         self.delete_button_rect = None
-        
-        # Reset spinner start time when loading stops
-        if not loading:
-            self._spinner_start_time = None
         
         # Get current item to check track info
         current_item = items[selected_index] if selected_index < len(items) else None
@@ -570,23 +566,11 @@ class Renderer:
         
         frames = self._spinner_cache[size]
         
-        # Track spinner start time for consistent rotation
-        current_time = time.time()
-        if self._spinner_start_time is None:
-            self._spinner_start_time = current_time
-        
-        # Select frame based on elapsed time since spinner started
-        # Rotate at 3 rotations per second for faster, more visible animation
-        # This makes the spinner more noticeable even at lower FPS
-        # With 30 frames, we cycle through all frames 3 times per second
-        rotations_per_second = 3.0
-        elapsed_time = current_time - self._spinner_start_time
-        
-        # Calculate frame index with proper modulo to avoid precision issues
-        # Use modulo on the frame count to keep it within bounds
-        total_frames_elapsed = elapsed_time * rotations_per_second * len(frames)
-        frame_idx = int(total_frames_elapsed) % len(frames)
-        frame = frames[frame_idx]
+        # Simple frame counter - increments every draw call
+        # At 30 FPS, this gives 1 rotation per second
+        # At 60 FPS, 2 rotations per second (still smooth)
+        frame = frames[self._spinner_frame_idx % len(frames)]
+        self._spinner_frame_idx += 1
         
         # Blit the pre-rendered frame
         self.screen.blit(frame, (cover_x, cover_y))
