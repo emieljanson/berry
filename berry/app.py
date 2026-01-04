@@ -755,14 +755,13 @@ class Berry:
         if action in ('left', 'right'):
             # Calculate target based on position + velocity
             abs_vel = abs(velocity)
-            velocity_bonus = 0 if abs_vel < 1.0 else (1 if abs_vel < 2.0 else (2 if abs_vel < 3.5 else 3))
+            # Higher thresholds = less sensitive (need faster swipe for bonus)
+            velocity_bonus = 0 if abs_vel < 1.5 else (1 if abs_vel < 2.5 else (2 if abs_vel < 4.0 else 3))
             
             base_target = round(visual_position)
             target = base_target + velocity_bonus if velocity < 0 else base_target - velocity_bonus
             
-            # Clamp
-            max_jump = 5
-            target = max(self.selected_index - max_jump, min(target, self.selected_index + max_jump))
+            # Clamp to valid range
             target = max(0, min(target, len(self.display_items) - 1))
             
             self._snap_to(target)
