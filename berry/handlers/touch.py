@@ -1,0 +1,98 @@
+"""
+Touch Handler - Swipe gestures for carousel navigation.
+"""
+import time
+from typing import Tuple, Optional
+
+from ..config import SWIPE_THRESHOLD, SWIPE_VELOCITY, LONG_PRESS_TIME
+
+
+class TouchHandler:
+    """Handle swipe gestures for carousel navigation."""
+    
+    # Movement threshold to consider it a swipe (not a long press)
+    SWIPE_MOVEMENT_THRESHOLD = 15
+    
+    def __init__(self):
+        self.start_x = 0
+        self.start_y = 0
+        self.start_time = 0
+        self.dragging = False
+        self.drag_offset = 0  # Current drag offset in pixels
+        self.long_press_fired = False  # Track if long press was triggered
+        self.is_swiping = False  # Track if user started swiping (moved beyond threshold)
+    
+    def on_down(self, pos: Tuple[int, int]):
+        """Called on touch/mouse down."""
+        self.start_x = pos[0]
+        self.start_y = pos[1]
+        self.start_time = time.time()
+        self.dragging = True
+        self.drag_offset = 0
+        self.long_press_fired = False
+        self.is_swiping = False
+    
+    def on_move(self, pos: Tuple[int, int]) -> float:
+        """Called on touch/mouse move. Returns drag offset."""
+        if not self.dragging:
+            return 0
+        self.drag_offset = pos[0] - self.start_x
+        
+        # Once user moves beyond threshold, mark as swiping (prevents long press)
+        if not self.is_swiping and abs(self.drag_offset) > self.SWIPE_MOVEMENT_THRESHOLD:
+            self.is_swiping = True
+        
+        return self.drag_offset
+    
+    def check_long_press(self) -> bool:
+        """Check if long press threshold reached. Returns True once."""
+        if not self.dragging or self.long_press_fired:
+            return False
+        
+        # Never trigger long press if user has started swiping
+        if self.is_swiping:
+            return False
+        
+        if time.time() - self.start_time >= LONG_PRESS_TIME:
+            self.long_press_fired = True
+            return True
+        
+        return False
+    
+    def on_up(self, pos: Tuple[int, int]) -> Tuple[Optional[str], float]:
+        """
+        Called on touch/mouse up.
+        
+        Returns:
+            (action, velocity) where action is 'left', 'right', 'tap', or None.
+            Velocity is in pixels/ms (positive = right, negative = left).
+        """
+        if not self.dragging:
+            return (None, 0)
+        
+        self.dragging = False
+        dx = pos[0] - self.start_x
+        dy = pos[1] - self.start_y
+        dt = (time.time() - self.start_time) * 1000  # ms
+        
+        # Ignore if mostly vertical
+        if abs(dy) > abs(dx) * 1.5:
+            self.drag_offset = 0
+            return ('tap', 0)
+        
+        # Use minimum dt of 50ms to prevent extreme velocity on instant release
+        dt_clamped = max(50, dt)
+        velocity = dx / dt_clamped if dt_clamped > 0 else 0
+        
+        # Cap velocity to reasonable range (-5 to 5 px/ms)
+        velocity = max(-5.0, min(5.0, velocity))
+        
+        # Check for swipe
+        if abs(dx) >= SWIPE_THRESHOLD or abs(velocity) >= SWIPE_VELOCITY:
+            self.drag_offset = 0
+            action = 'right' if dx > 0 else 'left'
+            return (action, velocity)
+        
+        self.drag_offset = 0
+        return ('tap', 0)
+

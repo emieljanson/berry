@@ -12,8 +12,7 @@ ExecStart=/home/admin/berry/venv/bin/python berry.py --fullscreen
 Restart=always
 RestartSec=5
 Environment=HOME=/home/admin
-Environment=DISPLAY=:0
-Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=XDG_RUNTIME_DIR=/run/user/1000
 
 [Install]
 WantedBy=multi-user.target

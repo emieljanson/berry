@@ -58,7 +58,9 @@ cleanup() {
     echo -e "${YELLOW}🛑 Stopping...${NC}"
     kill $LOG_PID 2>/dev/null || true
     
-    ssh $PI_HOST "sudo systemctl stop berry-librespot berry-native 2>/dev/null; pkill -9 -f 'berry.py' 2>/dev/null; pkill -9 -f 'go-librespot' 2>/dev/null" 2>/dev/null || true
+    # Quick kill with timeout - don't wait for systemctl
+    ssh -o ConnectTimeout=2 $PI_HOST "pkill -9 -f 'berry.py'" 2>/dev/null &
+    sleep 0.5
     
     echo -e "${GREEN}✓ Stopped${NC}"
     exit 0
@@ -168,6 +170,10 @@ pkill -9 -f "berry.py" 2>/dev/null || true
 pkill -9 -f "go-librespot" 2>/dev/null || true
 sleep 1
 
+# Ensure systemd services are linked
+sudo ln -sf ~/berry/pi/systemd/berry-*.service /etc/systemd/system/ 2>/dev/null
+sudo systemctl daemon-reload
+
 # Start librespot
 sudo systemctl start berry-librespot
 sleep 2
@@ -188,7 +194,7 @@ pip install -q -r requirements.txt 2>/dev/null
 mkdir -p data/images
 > /tmp/berry.log
 
-# Start Berry
+# Start Berry (auto-detects GPU acceleration)
 nohup python -u berry.py --fullscreen > /tmp/berry.log 2>&1 &
 sleep 2
 
