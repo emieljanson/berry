@@ -7,6 +7,7 @@ import math
 from typing import Optional, List, Dict, Tuple
 
 import pygame
+import pygame.gfxdraw
 
 from .helpers import draw_aa_circle, draw_aa_rounded_rect
 from .image_cache import ImageCache
@@ -516,11 +517,18 @@ class Renderer:
         self.delete_button_rect = (btn_x, btn_y, btn_size, btn_size)
     
     def _generate_spinner_frames(self, size: int, num_frames: int = 30) -> List[pygame.Surface]:
-        """Generate pre-rendered spinner frames for smooth animation."""
+        """Generate pre-rendered spinner frames for smooth animation with ease-in-out."""
         frames = []
-        spinner_size = size * 0.15  # 15% of cover size
-        dot_radius = max(2, int(spinner_size * 0.15))
-        dot_distance = spinner_size * 0.35
+        spinner_size = size * 0.15 * 1.25  # 15% of cover size, 25% larger
+        dot_radius = max(2, int(spinner_size * 0.15 * 1.25 * 0.9))  # 25% larger, then 10% smaller
+        dot_distance = spinner_size * 0.45 * 1.25  # 25% larger
+        
+        def ease_in_out(t: float) -> float:
+            """Stronger cubic ease-in-out function for more pronounced acceleration/deceleration."""
+            if t < 0.5:
+                return 4.0 * t * t * t
+            else:
+                return 1.0 - pow(-2.0 * t + 2.0, 3) / 2.0
         
         for frame_idx in range(num_frames):
             # Create frame surface
@@ -528,16 +536,25 @@ class Renderer:
             center_x = size // 2
             center_y = size // 2
             
-            # Calculate rotation angle for this frame (360 degrees over num_frames)
-            rotation_rad = math.radians((frame_idx * 360 / num_frames) % 360)
+            # Split rotation into two 180-degree halves, each with ease-in-out
+            half_frames = num_frames / 2.0
+            if frame_idx < half_frames:
+                # First half: 0 to 180 degrees with ease-in-out
+                t = frame_idx / half_frames if half_frames > 0 else 0.0
+                eased_t = ease_in_out(t)
+                rotation_rad = math.radians(eased_t * 180)
+            else:
+                # Second half: 180 to 360 degrees with ease-in-out
+                t = (frame_idx - half_frames) / half_frames if half_frames > 0 else 0.0
+                eased_t = ease_in_out(t)
+                rotation_rad = math.radians(180 + eased_t * 180)
             
             # Draw 4 solid white dots
             for i in range(4):
                 corner_angle = rotation_rad + (i * math.pi / 2)
-                dot_x = center_x + math.cos(corner_angle) * dot_distance
-                dot_y = center_y + math.sin(corner_angle) * dot_distance
-                pygame.draw.circle(frame, (255, 255, 255), 
-                                 (int(dot_x), int(dot_y)), dot_radius)
+                dot_x = int(center_x + math.cos(corner_angle) * dot_distance)
+                dot_y = int(center_y + math.sin(corner_angle) * dot_distance)
+                pygame.draw.circle(frame, (255, 255, 255), (dot_x, dot_y), dot_radius)
             
             frames.append(frame.convert_alpha())
         
