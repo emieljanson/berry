@@ -2,6 +2,8 @@
 Renderer - All drawing/rendering logic for the Berry UI.
 """
 import logging
+import time
+import math
 from typing import Optional, List, Dict, Tuple
 
 import pygame
@@ -13,7 +15,7 @@ from ..config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, COLORS,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
     TRACK_INFO_Y, CAROUSEL_Y, CONTROLS_Y,
-    BTN_SIZE, PLAY_BTN_SIZE, PROGRESS_BAR_HEIGHT,
+    BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING, PROGRESS_BAR_HEIGHT,
     VOLUME_LEVELS,
 )
 
@@ -38,6 +40,9 @@ class Renderer:
         self._progress_cache: Dict[str, pygame.Surface] = {}
         self._text_cache: Dict[str, pygame.Surface] = {}
         self._last_track_key: Optional[Tuple[str, str]] = None
+        self._spinner_cache: Dict[int, List[pygame.Surface]] = {}  # size -> list of frames
+        self._spinner_overlay_cache: Dict[int, pygame.Surface] = {}  # size -> overlay
+        self._spinner_start_time: Optional[float] = None  # Track when spinner started
         
         # Partial update state
         self._needs_full_redraw = True
@@ -67,12 +72,14 @@ class Renderer:
              delete_mode_id: Optional[str] = None,
              pressed_button: Optional[str] = None,
              loading: bool = False,
+             pending_play: bool = False,
              needs_setup: bool = False) -> Optional[List[pygame.Rect]]:
         """
         Main draw method.
         
         Args:
-            loading: If True, show pause icon even when paused (indicates pending play)
+            loading: If True, show spinner (has 200ms delay to avoid flicker)
+            pending_play: If True, show pause icon (immediate, no delay)
             needs_setup: If True, show Spotify setup instructions
         
         Returns list of dirty rects for partial update, or None for full flip.
@@ -93,6 +100,10 @@ class Renderer:
         # Clear button hit rects
         self.add_button_rect = None
         self.delete_button_rect = None
+        
+        # Reset spinner start time when loading stops
+        if not loading:
+            self._spinner_start_time = None
         
         # Get current item to check track info
         current_item = items[selected_index] if selected_index < len(items) else None
@@ -151,8 +162,8 @@ class Renderer:
             # Full redraw
             self._draw_background()
             self._draw_track_info(current_item, now_playing)
-            # Show pause icon when loading (paused but about to play)
-            show_as_playing = now_playing.playing or loading
+            # Show pause icon when pending play (immediate response to user action)
+            show_as_playing = now_playing.playing or pending_play
             self._draw_controls(show_as_playing, volume_index, pressed_button)
             
             # Cache static parts
@@ -161,7 +172,7 @@ class Renderer:
             self._static_layer.blit(self.screen, (0, 0))
             
             # Draw carousel
-            self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id)
+            self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id, loading)
             
             self._needs_full_redraw = False
             return None
@@ -171,16 +182,16 @@ class Renderer:
             self.screen.blit(self._static_layer, 
                            self._carousel_rect.topleft, 
                            self._carousel_rect)
-            self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id)
+            self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id, loading)
             return [self._carousel_rect]
         
         else:
             # Idle - update progress bar if playing
-            if now_playing.playing:
+            if now_playing.playing or loading:
                 self.screen.blit(self._static_layer,
                                self._carousel_rect.topleft,
                                self._carousel_rect)
-                self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id)
+                self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id, loading)
                 return [self._carousel_rect]
             return []
     
@@ -317,7 +328,7 @@ class Renderer:
             self.screen.blit(self._text_cache['artist_surface'], self._text_cache['artist_rect'])
     
     def _draw_carousel(self, items: List[CatalogItem], scroll_x: float, 
-                       now_playing: NowPlaying, delete_mode_id: Optional[str]):
+                       now_playing: NowPlaying, delete_mode_id: Optional[str], loading: bool = False):
         """Draw album cover carousel."""
         center_x = SCREEN_WIDTH // 2
         y = CAROUSEL_Y
@@ -365,6 +376,10 @@ class Renderer:
         
         if center_cover_rect and center_item:
             self._draw_cover_progress(center_cover_rect, center_item, now_playing)
+            
+            # Draw loading spinner if loading
+            if loading:
+                self._draw_loading_spinner(center_cover_rect)
             
             if center_item.is_temp:
                 self._draw_add_button(center_cover_rect)
@@ -423,7 +438,7 @@ class Renderer:
         """Draw playback control buttons with optional pressed state feedback."""
         center_x = SCREEN_WIDTH // 2
         y = CONTROLS_Y
-        btn_spacing = 145
+        btn_spacing = BTN_SPACING
         
         # Base colors
         gray_color = COLORS['bg_elevated']
@@ -503,4 +518,76 @@ class Renderer:
             self.screen.blit(tinted, icon_rect)
         
         self.delete_button_rect = (btn_x, btn_y, btn_size, btn_size)
+    
+    def _generate_spinner_frames(self, size: int, num_frames: int = 30) -> List[pygame.Surface]:
+        """Generate pre-rendered spinner frames for smooth animation."""
+        frames = []
+        spinner_size = size * 0.15  # 15% of cover size
+        dot_radius = max(2, int(spinner_size * 0.15))
+        dot_distance = spinner_size * 0.35
+        
+        for frame_idx in range(num_frames):
+            # Create frame surface
+            frame = pygame.Surface((size, size), pygame.SRCALPHA)
+            center_x = size // 2
+            center_y = size // 2
+            
+            # Calculate rotation angle for this frame (360 degrees over num_frames)
+            rotation_rad = math.radians((frame_idx * 360 / num_frames) % 360)
+            
+            # Draw 4 solid white dots
+            for i in range(4):
+                corner_angle = rotation_rad + (i * math.pi / 2)
+                dot_x = center_x + math.cos(corner_angle) * dot_distance
+                dot_y = center_y + math.sin(corner_angle) * dot_distance
+                pygame.draw.circle(frame, (255, 255, 255), 
+                                 (int(dot_x), int(dot_y)), dot_radius)
+            
+            frames.append(frame.convert_alpha())
+        
+        return frames
+    
+    def _get_spinner_overlay(self, size: int) -> pygame.Surface:
+        """Get or create cached dimming overlay for spinner."""
+        if size not in self._spinner_overlay_cache:
+            overlay = pygame.Surface((size, size), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 115))  # 45% dark overlay
+            self._spinner_overlay_cache[size] = overlay.convert_alpha()
+        return self._spinner_overlay_cache[size]
+    
+    def _draw_loading_spinner(self, cover_rect: tuple):
+        """Draw loading spinner overlay on cover art using pre-rendered frames."""
+        cover_x, cover_y, cover_w, cover_h = cover_rect
+        size = max(cover_w, cover_h)
+        
+        # Get or create cached overlay
+        overlay = self._get_spinner_overlay(size)
+        self.screen.blit(overlay, (cover_x, cover_y))
+        
+        # Get or create cached spinner frames
+        if size not in self._spinner_cache:
+            self._spinner_cache[size] = self._generate_spinner_frames(size, num_frames=30)
+        
+        frames = self._spinner_cache[size]
+        
+        # Track spinner start time for consistent rotation
+        current_time = time.time()
+        if self._spinner_start_time is None:
+            self._spinner_start_time = current_time
+        
+        # Select frame based on elapsed time since spinner started
+        # Rotate at 3 rotations per second for faster, more visible animation
+        # This makes the spinner more noticeable even at lower FPS
+        # With 30 frames, we cycle through all frames 3 times per second
+        rotations_per_second = 3.0
+        elapsed_time = current_time - self._spinner_start_time
+        
+        # Calculate frame index with proper modulo to avoid precision issues
+        # Use modulo on the frame count to keep it within bounds
+        total_frames_elapsed = elapsed_time * rotations_per_second * len(frames)
+        frame_idx = int(total_frames_elapsed) % len(frames)
+        frame = frames[frame_idx]
+        
+        # Blit the pre-rendered frame
+        self.screen.blit(frame, (cover_x, cover_y))
 

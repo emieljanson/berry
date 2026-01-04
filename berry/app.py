@@ -4,6 +4,7 @@ Berry Application - Main application class.
 import os
 import sys
 import time
+import signal
 import logging
 import threading
 import subprocess
@@ -18,7 +19,7 @@ from .config import (
     CATALOG_PATH, IMAGES_DIR, ICONS_DIR,
     MOCK_MODE, VOLUME_LEVELS,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
-    CAROUSEL_Y, CONTROLS_Y, BTN_SIZE, PLAY_BTN_SIZE,
+    CAROUSEL_Y, CONTROLS_Y, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
     PROGRESS_SAVE_INTERVAL,
     has_spotify_credentials,
 )
@@ -45,6 +46,31 @@ class Berry:
         self._init_display(fullscreen)
         self._init_components()
     
+    def _check_kms_available(self) -> bool:
+        """Check if KMS/DRM is likely configured on the system."""
+        # Check for DRI devices (KMS/DRM creates these)
+        if os.path.exists('/dev/dri'):
+            try:
+                dri_devices = os.listdir('/dev/dri')
+                # Should have at least card0 or renderD128
+                if any(dev.startswith(('card', 'renderD')) for dev in dri_devices):
+                    return True
+            except OSError:
+                pass
+        
+        # Check if GL driver is configured (check for vc4-kms-v3d overlay)
+        try:
+            if os.path.exists('/boot/config.txt'):
+                with open('/boot/config.txt', 'r') as f:
+                    config = f.read()
+                    # Check for KMS-related overlays
+                    if 'dtoverlay=vc4-kms-v3d' in config or 'dtoverlay=vc4-kms-dsi-7inch' in config:
+                        return True
+        except (OSError, IOError):
+            pass
+        
+        return False
+    
     def _setup_video_driver(self):
         """Configure optimal video driver for the platform."""
         # Skip if already set
@@ -55,16 +81,35 @@ class Berry:
         if not os.path.exists('/proc/device-tree/model'):
             return
         
+        # Check if KMS/DRM is likely configured
+        kms_configured = self._check_kms_available()
+        
         # Try kmsdrm for GPU acceleration
         os.environ['SDL_VIDEODRIVER'] = 'kmsdrm'
         try:
             pygame.display.init()
             pygame.display.quit()  # Success - will reinit in pygame.init()
             logger.info('Using kmsdrm (GPU accelerated)')
-        except pygame.error:
-            # Fall back to framebuffer
+        except pygame.error as e:
+            # Fall back to default driver
             del os.environ['SDL_VIDEODRIVER']
-            logger.info('kmsdrm not available, using default driver')
+            error_msg = str(e) if e else 'unknown error'
+            logger.warning(f'kmsdrm driver failed: {error_msg}')
+            
+            if not kms_configured:
+                logger.warning('=' * 60)
+                logger.warning('GPU ACCELERATION NOT AVAILABLE')
+                logger.warning('=' * 60)
+                logger.warning('To enable GPU acceleration on Raspberry Pi:')
+                logger.warning('  1. Run: sudo raspi-config')
+                logger.warning('  2. Navigate to: Advanced Options > GL Driver')
+                logger.warning('  3. Select: G1 GL (Full KMS)')
+                logger.warning('  4. Reboot the Pi')
+                logger.warning('=' * 60)
+            else:
+                logger.warning('KMS/DRM appears configured but kmsdrm driver failed.')
+                logger.warning('This may indicate a driver compatibility issue.')
+            logger.info('Falling back to default driver (software rendering)')
     
     def _init_display(self, fullscreen: bool):
         """Initialize the display with optimal settings."""
@@ -117,11 +162,12 @@ class Berry:
             get_volume=lambda: VOLUME_LEVELS[self.volume_index]['level']
         )
         
-        # State (with thread-safe now_playing)
+        # State (with thread-safe now_playing and connected)
         self._now_playing = NowPlaying()
         self._now_playing_lock = threading.Lock()
+        self._connected = self.mock_mode
+        self._connected_lock = threading.Lock()
         self.selected_index = 0
-        self.connected = self.mock_mode
         self._connection_fail_count = 0  # Track consecutive failures
         self._connection_grace_threshold = 3  # Failures before showing disconnected
         self.needs_refresh = True
@@ -161,6 +207,8 @@ class Berry:
         # Navigation pause state (pause when swiping away from playing item)
         self._paused_for_navigation = False
         self._paused_context_uri: Optional[str] = None
+        self._loading_start_time: Optional[float] = None
+        self._is_loading: bool = False
         
         # Button debouncing and feedback
         self._last_action_time = 0
@@ -175,7 +223,15 @@ class Berry:
         # Mock playback state
         self.mock_playing = False
         self.mock_position = 0
+        
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGTERM, self._handle_signal)
+        signal.signal(signal.SIGINT, self._handle_signal)
         self.mock_duration = 180000
+        
+        # Performance logging
+        self._last_fps_log = time.time()
+        self._fps_log_interval = 30  # Log FPS every 30 seconds
         
         # Initialize carousel
         self._update_carousel_max_index()
@@ -198,7 +254,7 @@ class Berry:
             try:
                 icons[name] = pygame.image.load(ICONS_DIR / filename).convert_alpha()
             except Exception as e:
-                logger.warning(f'Failed to load icon {filename}: {e}')
+                logger.warning(f'Failed to load icon {filename}: {e}', exc_info=True)
         return icons
     
     def _create_click_sound(self):
@@ -220,7 +276,7 @@ class Berry:
             stereo_wave = np.column_stack([wave, wave])
             return pygame.sndarray.make_sound(stereo_wave)
         except Exception as e:
-            logger.warning(f'Could not create click sound: {e}')
+            logger.debug(f'Could not create click sound: {e}')  # Not critical, debug level
             return None
     
     def _play_click(self):
@@ -247,8 +303,13 @@ class Berry:
                     pi_model = f.read().strip().replace('\x00', '')
                 logger.info(f'Device: {pi_model}')
                 
+                # Only show warning if not using GPU acceleration
                 if actual_driver not in ('kmsdrm', 'KMSDRM'):
-                    logger.warning('Consider enabling KMS/DRM for GPU acceleration')
+                    kms_available = self._check_kms_available()
+                    if not kms_available:
+                        logger.debug('KMS/DRM not detected - GPU acceleration unavailable')
+                    else:
+                        logger.debug('KMS/DRM detected but not using kmsdrm driver')
             except Exception:
                 pass
     
@@ -286,9 +347,27 @@ class Berry:
         with self._now_playing_lock:
             self._now_playing = value
     
+    @property
+    def connected(self) -> bool:
+        """Thread-safe getter for connected state."""
+        with self._connected_lock:
+            return self._connected
+    
+    @connected.setter
+    def connected(self, value: bool):
+        """Thread-safe setter for connected state."""
+        with self._connected_lock:
+            self._connected = value
+    
     def _update_carousel_max_index(self):
         """Update carousel max index when items change."""
         self.carousel.max_index = max(0, len(self.display_items) - 1)
+    
+    def _handle_signal(self, signum, frame):
+        """Handle SIGTERM/SIGINT for graceful shutdown."""
+        sig_name = 'SIGTERM' if signum == signal.SIGTERM else 'SIGINT'
+        logger.info(f'Received {sig_name}, shutting down...')
+        self.running = False
     
     def start(self):
         """Start the application."""
@@ -317,6 +396,7 @@ class Berry:
         else:
             logger.info('Running in MOCK MODE')
         
+        logger.info('Entering main loop...')
         # Main loop
         while self.running:
             # Sleep mode: minimal CPU usage, only check for wake events
@@ -326,18 +406,24 @@ class Berry:
                 continue
             
             # Dynamic FPS based on activity:
-            # - 60 FPS: carousel animation, touch dragging
+            # - 60 FPS: carousel animation, touch dragging, loading spinner
             # - 10 FPS: music playing (progress bar updates)
             # - 5 FPS: idle (fully static screen)
             is_animating = not self.carousel.settled or self.touch.dragging
-            if is_animating:
-                target_fps = 60
+            if is_animating or self._is_loading:
+                target_fps = 60  # Smooth animations and spinner
             elif self.now_playing.playing:
                 target_fps = 10
             else:
                 target_fps = 5
             
             dt = self.clock.tick(target_fps) / 1000.0
+            
+            # Log frame spikes (>20% over target, minimum 100ms)
+            target_frame_time = 1.0 / target_fps
+            spike_threshold = max(0.1, target_frame_time * 1.2)
+            if dt > spike_threshold:
+                logger.warning(f'Frame spike: {dt*1000:.0f}ms (target: {target_fps} FPS)')
             
             self._handle_events()
             self._update(dt)
@@ -349,6 +435,39 @@ class Berry:
                 pygame.display.flip()
             
             self.perf_monitor.update(dt, is_animating)
+            
+            # Periodic FPS logging
+            now = time.time()
+            if now - self._last_fps_log >= self._fps_log_interval:
+                self._last_fps_log = now
+                avg_fps = self.perf_monitor.current_fps
+                
+                # Determine current target FPS for warning threshold
+                log_is_animating = not self.carousel.settled or self.touch.dragging
+                if log_is_animating or self._is_loading:
+                    log_target_fps = 60
+                elif self.now_playing.playing:
+                    log_target_fps = 10
+                else:
+                    log_target_fps = 5
+                
+                logger.info(f'FPS: {avg_fps:.1f} | connected={self.connected} | playing={self.now_playing.playing} | loading={self._is_loading} | target={log_target_fps}')
+                
+                # Warn if FPS is significantly below target:
+                # - Target 60 FPS (animations): warn if < 30 FPS
+                # - Target 10 FPS (playing): warn if < 8 FPS (20% below)
+                # - Target 5 FPS (idle): warn if < 4 FPS (20% below)
+                if not self.sleep_manager.is_sleeping:
+                    if log_target_fps == 60 and avg_fps < 30:
+                        logger.warning(f'Low FPS during animation: {avg_fps:.1f} (target: 60 FPS)')
+                    elif log_target_fps == 10 and avg_fps < 8:
+                        logger.warning(f'Low FPS while playing: {avg_fps:.1f} (target: 10 FPS)')
+                    elif log_target_fps == 5 and avg_fps < 4:
+                        logger.warning(f'Low FPS while idle: {avg_fps:.1f} (target: 5 FPS)')
+        
+        # Save progress before shutdown
+        logger.info('Shutting down...')
+        self._save_progress_on_shutdown()
         
         self.events.stop()
         pygame.quit()
@@ -356,6 +475,7 @@ class Berry:
     
     def _poll_status(self):
         """Poll librespot status in background."""
+        was_fast_polling = False
         while self.running:
             try:
                 self._refresh_status()
@@ -368,24 +488,41 @@ class Berry:
                     self.connected = False
             
             # Poll faster when disconnected for quicker recovery
-            poll_interval = 0.5 if not self.connected else 1.0
+            is_fast_polling = not self.connected
+            if is_fast_polling != was_fast_polling:
+                if is_fast_polling:
+                    logger.debug('Fast polling mode (disconnected)')
+                else:
+                    logger.debug('Normal polling mode (connected)')
+                was_fast_polling = is_fast_polling
+            
+            poll_interval = 0.5 if is_fast_polling else 1.0
             time.sleep(poll_interval)
     
     def _refresh_status(self):
         """Refresh playback status from librespot."""
         status = self.api.status()
+        was_connected = self.connected
         
         # Determine connection with grace period
         has_connection = status is not None or self.api.is_connected()
         if has_connection:
+            if self._connection_fail_count > 0:
+                logger.debug(f'Connection recovered after {self._connection_fail_count} failures')
             self._connection_fail_count = 0
             self.connected = True
         else:
             self._connection_fail_count += 1
             if self._connection_fail_count >= self._connection_grace_threshold:
-                if self.connected:  # Only log once
-                    logger.warning(f'Connection lost after {self._connection_fail_count} failures')
                 self.connected = False
+        
+        # Log connection state changes
+        if was_connected != self.connected:
+            if self.connected:
+                logger.info(f'CONNECTION RESTORED (was disconnected)')
+            else:
+                logger.warning(f'CONNECTION LOST after {self._connection_fail_count} failures')
+            logger.info(f'  fail_count={self._connection_fail_count}, status={status is not None}')
         
         if status and isinstance(status, dict):
             track = status.get('track') or {}
@@ -621,6 +758,7 @@ class Berry:
             # Debounce tap actions
             now = time.time()
             if now - self._last_action_time < self._action_debounce:
+                logger.debug('Carousel tap debounced')
                 return
             
             if x < center_x - 100:
@@ -629,28 +767,35 @@ class Berry:
                 self._navigate(1)
             elif self.connected or self.mock_mode:
                 # Only toggle play if connected
+                logger.info('Carousel tap: play')
+                logger.debug(f'  connected={self.connected}, playing={self.now_playing.playing}')
                 self._last_action_time = now
                 self._pressed_button = 'play'
                 self._pressed_time = now
                 self._play_click()
                 self._toggle_play()
                 self.renderer.invalidate()
+            else:
+                logger.info(f'Carousel tap IGNORED (disconnected)')
+                logger.info(f'  connected={self.connected}, fail_count={self._connection_fail_count}')
     
     def _handle_button_tap(self, pos):
         """Handle direct tap on control buttons with debouncing."""
         # Debounce: ignore taps within 300ms of each other
         now = time.time()
         if now - self._last_action_time < self._action_debounce:
+            logger.debug(f'Button tap debounced at ({pos[0]}, {pos[1]})')
             return
         
         # Don't process API actions if disconnected (except volume which is local too)
         if not self.connected and not self.mock_mode:
-            logger.debug('Ignoring button tap: disconnected')
+            logger.info(f'Button tap IGNORED (disconnected) at ({pos[0]}, {pos[1]})')
+            logger.info(f'  connected={self.connected}, fail_count={self._connection_fail_count}')
             return
         
         x, y = pos
         center_x = SCREEN_WIDTH // 2
-        btn_spacing = 145
+        btn_spacing = BTN_SPACING
         
         right_cover_edge = center_x + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
         vol_x = right_cover_edge - BTN_SIZE // 2
@@ -672,6 +817,9 @@ class Berry:
                 self._toggle_volume()
             
             if button_pressed:
+                logger.info(f'Button press: {button_pressed}')
+                logger.debug(f'  connected={self.connected}, playing={self.now_playing.playing}')
+                logger.debug(f'  paused={self.now_playing.paused}, context={self.now_playing.context_uri}')
                 self._last_action_time = now
                 self._pressed_button = button_pressed
                 self._pressed_time = now
@@ -701,6 +849,7 @@ class Berry:
                     threading.Thread(target=self.api.pause, daemon=True).start()
             
             item = items[target_index]
+            logger.debug(f'Snap: {old_index} -> {target_index}, item={item.name}')
             if not item.is_temp:
                 # Check if we're returning to the item we paused for navigation
                 if (self._paused_for_navigation and 
@@ -712,6 +861,7 @@ class Berry:
                     self.play_timer.cancel()
                     threading.Thread(target=self.api.resume, daemon=True).start()
                 elif not self._is_item_playing(item):
+                    logger.info(f'PlayTimer starting for: {item.name} (index={target_index})')
                     self.play_timer.start(item)
                 else:
                     self.play_timer.cancel()
@@ -802,6 +952,7 @@ class Berry:
     
     def _execute_play(self, uri: str, from_beginning: bool):
         """Execute the play request in background thread."""
+        logger.info(f'Execute play: context_uri={uri[:50]}..., from_beginning={from_beginning}')
         try:
             # Set Spotify volume to 100% on first play
             if not self._spotify_volume_initialized:
@@ -816,8 +967,12 @@ class Berry:
                 saved_progress = self.catalog_manager.get_progress(uri)
                 if saved_progress:
                     skip_to_uri = saved_progress.get('uri')
+                    logger.info(f'  Saved progress: track={skip_to_uri}, pos={saved_progress.get("position", 0)//1000}s')
+                else:
+                    logger.info(f'  No saved progress found')
             
             success = self.api.play(uri, skip_to_uri=skip_to_uri)
+            logger.info(f'  Play request: success={success}')
             
             # Seek to saved position
             if success and saved_progress and saved_progress.get('position', 0) > 0:
@@ -873,7 +1028,12 @@ class Berry:
     
     def _on_wake(self):
         """Called when waking from sleep - reconnect and reset state."""
-        logger.info('Waking up - reconnecting...')
+        logger.info('=' * 40)
+        logger.info('WAKE UP START')
+        logger.info(f'  Connection state: {self.connected}')
+        logger.info(f'  Fail count: {self._connection_fail_count}')
+        logger.info(f'  Playing: {self.now_playing.playing}')
+        logger.info(f'  Volume mode: {self._volume_mode}')
         
         # Reset connection state for immediate reconnect
         self._connection_fail_count = 0
@@ -881,7 +1041,19 @@ class Berry:
         self.needs_refresh = True
         
         # Force immediate status refresh in background
-        threading.Thread(target=self._refresh_status, daemon=True).start()
+        def wake_refresh():
+            try:
+                self._refresh_status()
+                logger.info(f'  Post-refresh connected: {self.connected}')
+                logger.info(f'  Post-refresh playing: {self.now_playing.playing}')
+                logger.info('WAKE UP COMPLETE')
+                logger.info('=' * 40)
+            except Exception as e:
+                logger.error(f'  Wake refresh failed: {e}')
+                logger.info('WAKE UP FAILED')
+                logger.info('=' * 40)
+        
+        threading.Thread(target=wake_refresh, daemon=True).start()
         
         # Reset to Berry mode on wake for clean state
         if self._volume_mode == 'spotify':
@@ -929,8 +1101,10 @@ class Berry:
         try:
             subprocess.run(['amixer', 'set', 'PCM', f'{level}%'],
                           capture_output=True, check=True)
+        except (subprocess.SubprocessError, FileNotFoundError) as e:
+            logger.debug(f'Could not set system volume: {e}')  # Not critical on non-Pi systems
         except Exception as e:
-            logger.warning(f'Could not set system volume: {e}')
+            logger.warning(f'Unexpected error setting system volume: {e}', exc_info=True)
     
     def _handle_spotify_volume_change(self, spotify_volume: int):
         """Handle volume changes from Spotify (ownership model)."""
@@ -1068,7 +1242,40 @@ class Berry:
             self.last_saved_track_uri = track.get('uri')
             
         except Exception as e:
-            logger.warning(f'Error saving progress: {e}')
+            logger.warning('Error saving progress', exc_info=True)
+    
+    def _save_progress_on_shutdown(self):
+        """Save progress synchronously before shutdown."""
+        if self.mock_mode:
+            return
+        
+        # Check if we have something to save
+        if not self.now_playing.playing and not self.now_playing.context_uri:
+            logger.debug('No active playback to save on shutdown')
+            return
+        
+        try:
+            status = self.api.status()
+            if not status or not status.get('track'):
+                logger.debug('No track info available for shutdown save')
+                return
+            
+            context_uri = status.get('context_uri') or self.now_playing.context_uri
+            if not context_uri:
+                return
+            
+            track = status['track']
+            self.catalog_manager.save_progress(
+                context_uri,
+                track.get('uri'),
+                track.get('position', 0),
+                track.get('name'),
+                ', '.join(track.get('artist_names', []))
+            )
+            logger.info(f'Saved progress on shutdown: {track.get("name")} @ {track.get("position", 0) // 1000}s')
+            
+        except Exception as e:
+            logger.warning(f'Could not save progress on shutdown: {e}')
     
     def _sync_to_playing(self):
         """Sync carousel to currently playing item."""
@@ -1152,16 +1359,18 @@ class Berry:
         if self.connected or self.mock_mode:
             item_to_play = self.play_timer.check()
             if item_to_play:
+                logger.info(f'PlayTimer fired: item={item_to_play.name}, uri={item_to_play.uri[:50]}..., '
+                           f'selected_index={self.selected_index}, carousel_pos={self.carousel.scroll_x:.2f}')
                 # Check if we should resume (same item that was paused for navigation)
                 if (self._paused_for_navigation and 
                     self._paused_context_uri == item_to_play.uri):
-                    logger.info(f'Resuming: {item_to_play.name}')
+                    logger.info(f'  -> Resuming (paused for nav)')
                     self._paused_for_navigation = False
                     self._paused_context_uri = None
                     threading.Thread(target=self.api.resume, daemon=True).start()
                 else:
                     # New item, play it
-                    logger.info(f'Auto-playing: {item_to_play.name}')
+                    logger.info(f'  -> Auto-playing NEW')
                     self._paused_for_navigation = False
                     self._paused_context_uri = None
                     self._play_item(item_to_play.uri)
@@ -1202,8 +1411,34 @@ class Berry:
     
     def _draw(self):
         """Draw the UI."""
-        # Show loading state when paused for navigation (waiting for new item to play)
-        is_loading = self._paused_for_navigation or self.play_timer.item is not None
+        # Show loading state when:
+        # - Paused for navigation (waiting to switch to new item)
+        # - Play timer running (about to auto-play)
+        # - Play request in progress (API call to librespot)
+        # - Recently made play request but track hasn't started playing yet
+        recent_play_request = (self.last_user_play_time > 0 and 
+                              time.time() - self.last_user_play_time < 5.0 and
+                              self.last_user_play_uri is not None)
+        waiting_for_playback = (recent_play_request and 
+                               (not self.now_playing.playing or 
+                                self.now_playing.context_uri != self.last_user_play_uri))
+        
+        should_show_loading = (self._paused_for_navigation or 
+                               self.play_timer.item is not None or 
+                               self._play_in_progress or
+                               waiting_for_playback)
+        
+        # Track loading start time for 200ms delay
+        if should_show_loading:
+            if self._loading_start_time is None:
+                self._loading_start_time = time.time()
+        else:
+            self._loading_start_time = None
+        
+        # Only show spinner after 200ms delay to avoid flicker
+        self._is_loading = (should_show_loading and 
+                           self._loading_start_time is not None and
+                           time.time() - self._loading_start_time > 0.2)
         
         return self.renderer.draw(
             items=self.display_items,
@@ -1217,7 +1452,8 @@ class Berry:
             volume_index=self.volume_index,
             delete_mode_id=self.delete_mode_id,
             pressed_button=self._pressed_button,
-            loading=is_loading,
+            loading=self._is_loading,  # Spinner (with 200ms delay)
+            pending_play=should_show_loading,  # Play button (immediate)
             needs_setup=self.needs_setup,
         )
 

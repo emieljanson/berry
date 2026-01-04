@@ -45,6 +45,13 @@ class EventListener:
         self.running = False
         if self.ws:
             self.ws.close()
+        
+        # Wait for thread to finish (max 2 seconds)
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=2.0)
+            if self.thread.is_alive():
+                logger.warning('WebSocket thread did not stop in time')
+        
         logger.info('Stopped WebSocket listener')
     
     def _run(self):
@@ -60,7 +67,7 @@ class EventListener:
                 )
                 self.ws.run_forever()
             except Exception as e:
-                logger.warning(f'WebSocket error: {e}')
+                logger.warning(f'WebSocket connection error: {e}', exc_info=True)
             
             if self.running:
                 # Wait before reconnecting (short delay for fast recovery)
@@ -88,16 +95,22 @@ class EventListener:
             
             # Notify app to refresh state
             self.on_update()
+        except json.JSONDecodeError as e:
+            logger.warning(f'Error parsing WebSocket event JSON: {e}')
         except Exception as e:
-            logger.warning(f'Error parsing event: {e}')
+            logger.warning(f'Error processing WebSocket event: {e}', exc_info=True)
     
     def _on_error(self, ws, error):
         """Handle WebSocket error."""
-        # Suppress errors - we'll reconnect anyway
-        pass
+        if error:
+            # Log non-critical errors (connection issues are expected)
+            if isinstance(error, Exception):
+                logger.debug(f'WebSocket error (will reconnect): {error}')
+            else:
+                logger.debug(f'WebSocket error: {error}')
     
     def _on_close(self, ws, close_status, close_msg):
         """Handle WebSocket close."""
         if self._was_connected:
-            logger.debug('WebSocket disconnected')
+            logger.info('WebSocket disconnected')
 

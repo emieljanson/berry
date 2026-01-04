@@ -139,6 +139,8 @@ class AutoPauseManager:
                 capture_output=True, 
                 check=True
             )
+        except (subprocess.SubprocessError, FileNotFoundError) as e:
+            logger.debug(f'Could not set system volume: {e}')
         except Exception as e:
-            logger.warning(f'Could not set system volume: {e}')
+            logger.warning(f'Unexpected error setting system volume: {e}', exc_info=True)
 

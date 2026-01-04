@@ -85,8 +85,8 @@ class ImageCache:
                 else:
                     self.get(image_path, size)
                 loaded += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f'Failed to pre-load image {image_path}: {e}')
             
             # Small delay to not block main thread
             time.sleep(0.01)
@@ -309,8 +309,10 @@ class ImageCache:
             surface = surface.convert_alpha()
             self.cache[cache_key] = surface
             self._access_times[cache_key] = time.time()
+        except requests.RequestException as e:
+            logger.debug(f'Error downloading image from {url[:50]}...: {e}')
         except Exception as e:
-            logger.warning(f'Error downloading image: {e}')
+            logger.warning(f'Unexpected error downloading image: {e}', exc_info=True)
         finally:
             with self._loading_lock:
                 self.loading.discard(url)

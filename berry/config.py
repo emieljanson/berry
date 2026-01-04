@@ -31,6 +31,12 @@ CATALOG_PATH = DATA_DIR / 'catalog.json'
 IMAGES_DIR = DATA_DIR / 'images'
 ICONS_DIR = Path(__file__).parent.parent / 'icons'
 
+# Logging directory
+LOG_DIR = Path.home() / 'berry' / 'logs'
+LOG_FILE = LOG_DIR / 'berry.log'
+LOG_MAX_BYTES = 5 * 1024 * 1024  # 5MB per file
+LOG_BACKUP_COUNT = 10  # Keep 10 backup files (~50MB total)
+
 # ============================================
 # COMMAND LINE FLAGS
 # ============================================
@@ -72,6 +78,10 @@ CONTROLS_Y = 620     # Bottom area
 # Button sizes
 BTN_SIZE = 100
 PLAY_BTN_SIZE = 120
+
+# Button spacing: align prev/next buttons with cover edges
+# (button edge aligned with cover edge)
+BTN_SPACING = (COVER_SIZE - BTN_SIZE) // 2  # 155px
 
 # Progress bar
 PROGRESS_BAR_HEIGHT = 8

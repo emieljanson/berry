@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Berry Pi Development Script
-# Syncs files and runs the Pygame app on the Pi
+# Syncs files and runs the Pygame app on the Pi via systemd
 
 set -e
 
@@ -56,11 +56,12 @@ fi
 cleanup() {
     echo ""
     echo -e "${YELLOW}🛑 Stopping...${NC}"
+    
+    # Kill log tail
     kill $LOG_PID 2>/dev/null || true
     
-    # Quick kill with timeout - don't wait for systemctl
-    ssh -o ConnectTimeout=2 $PI_HOST "pkill -9 -f 'berry.py'" 2>/dev/null &
-    sleep 0.5
+    # Stop Berry service gracefully (SIGTERM → graceful shutdown)
+    ssh -o ConnectTimeout=3 $PI_HOST "sudo systemctl stop berry-native" 2>/dev/null || true
     
     echo -e "${GREEN}✓ Stopped${NC}"
     exit 0
@@ -99,16 +100,23 @@ sync_files() {
     echo -e "${GREEN}✓ Synced${NC}"
 }
 
-# Restart the Berry app on Pi
+# Restart the Berry app via systemd
 restart_app() {
     echo -e "${BLUE}🔄 Restarting...${NC}"
-    ssh $PI_HOST 'pkill -f "berry.py" 2>/dev/null || true; sleep 0.5; cd ~/berry && source venv/bin/activate && nohup python -u berry.py --fullscreen > /tmp/berry.log 2>&1 &' 2>/dev/null
+    
+    # Reload systemd config in case service file changed, then restart
+    ssh $PI_HOST "sudo systemctl daemon-reload && sudo systemctl restart berry-native" 2>/dev/null
+    
+    # Wait for service to start
     sleep 1
-    if ssh $PI_HOST 'pgrep -f "berry.py" > /dev/null' 2>/dev/null; then
+    
+    # Check status
+    if ssh $PI_HOST "systemctl is-active --quiet berry-native" 2>/dev/null; then
         echo -e "${GREEN}✓ Running${NC}"
     else
         echo -e "${RED}✗ Failed to start${NC}"
-        ssh $PI_HOST 'tail -10 /tmp/berry.log' 2>/dev/null
+        ssh $PI_HOST "sudo journalctl -u berry-native -n 10 --no-pager" 2>/dev/null || true
+        ssh $PI_HOST "tail -10 /home/admin/berry/berry.log" 2>/dev/null || true
     fi
 }
 
@@ -117,41 +125,55 @@ start_logs() {
     kill $LOG_PID 2>/dev/null || true
     sleep 0.2
     
-    ssh $PI_HOST 'tail -f /tmp/berry.log 2>/dev/null' 2>/dev/null | while IFS= read -r line; do
-        # Filter based on Python log levels
-        case "$line" in
-            *"[ERROR]"*|*"[CRITICAL]"*|*"Traceback"*|*"Error:"*)
-                echo -e "${RED}$line${NC}"
-                ;;
-            *"[WARNING]"*)
-                echo -e "${YELLOW}$line${NC}"
-                ;;
-            *"[INFO]"*)
-                if [ "$VERBOSE" = true ]; then
+    ssh $PI_HOST 'tail -f /home/admin/berry/berry.log 2>/dev/null' 2>/dev/null | while IFS= read -r line; do
+        if [ "$VERBOSE" = true ]; then
+            # Verbose mode: show everything, just add colors
+            case "$line" in
+                *"[ERROR]"*|*"[CRITICAL]"*|*"Traceback"*|*"Error:"*)
+                    echo -e "${RED}$line${NC}"
+                    ;;
+                *"[WARNING]"*)
+                    echo -e "${YELLOW}$line${NC}"
+                    ;;
+                *"[INFO]"*)
                     echo -e "${CYAN}$line${NC}"
-                else
-                    # Only show important actions in non-verbose mode
+                    ;;
+                *"[DEBUG]"*)
+                    echo -e "${DIM}$line${NC}"
+                    ;;
+                *)
+                    echo "$line"
+                    ;;
+            esac
+        else
+            # Normal mode: show only important logs
+            case "$line" in
+                *"[ERROR]"*|*"[CRITICAL]"*|*"Traceback"*|*"Error:"*)
+                    echo -e "${RED}$line${NC}"
+                    ;;
+                *"[WARNING]"*)
+                    echo -e "${YELLOW}$line${NC}"
+                    ;;
+                *"[INFO]"*)
+                    # Only show important actions
                     case "$line" in
-                        *"Starting"*|*"Playing"*|*"Pausing"*|*"Resuming"*|*"Saving"*|*"Deleting"*|*"Volume"*|*"Sleep"*|*"Waking"*)
+                        *"STARTUP"*|*"Starting"*|*"started"*|*"Entering"*|\
+                        *"Playing"*|*"Pausing"*|*"Resuming"*|*"Stopped"*|\
+                        *"Saving"*|*"Deleting"*|*"Saved"*|\
+                        *"Volume"*|*"Sleep"*|*"Wake"*|*"WAKE"*|\
+                        *"Connected"*|*"CONNECTION"*|*"Disconnected"*|\
+                        *"SIGTERM"*|*"SIGINT"*|*"shutting down"*|*"Shutdown"*|\
+                        *"TempItem"*|*"Syncing"*|*"Context"*)
                             echo -e "${CYAN}$line${NC}"
                             ;;
                     esac
-                fi
-                ;;
-            *"[DEBUG]"*)
-                [ "$VERBOSE" = true ] && echo -e "${DIM}$line${NC}"
-                ;;
-            "Controls:"*|"   "*|"")
-                # Startup text or empty lines - show in verbose
-                [ "$VERBOSE" = true ] && echo "$line"
-                ;;
-            *)
-                # Other output (startup messages without log level)
-                if [[ ! "$line" =~ ^[[:space:]]*$ ]]; then
-                    echo "$line"
-                fi
-                ;;
-        esac
+                    ;;
+                *"====="*)
+                    # Startup banners
+                    echo -e "${GREEN}$line${NC}"
+                    ;;
+            esac
+        fi
     done &
     LOG_PID=$!
 }
@@ -160,23 +182,24 @@ start_logs() {
 sync_files
 echo ""
 
-# Start the app on Pi
+# Start/setup services on Pi
 echo -e "${BLUE}🚀 Starting Berry...${NC}"
 
 ssh -t $PI_HOST << 'ENDSSH'
-# Stop everything first
-sudo systemctl stop berry-native berry-librespot 2>/dev/null || true
-pkill -9 -f "berry.py" 2>/dev/null || true
-pkill -9 -f "go-librespot" 2>/dev/null || true
-sleep 1
-
 # Ensure systemd services are linked
 sudo ln -sf ~/berry/pi/systemd/berry-*.service /etc/systemd/system/ 2>/dev/null
 sudo systemctl daemon-reload
 
-# Start librespot
-sudo systemctl start berry-librespot
-sleep 2
+# Stop any orphan processes first
+pkill -9 -f "berry.py" 2>/dev/null || true
+pkill -9 -f "go-librespot" 2>/dev/null || true
+sleep 0.5
+
+# Start librespot if not running
+if ! systemctl is-active --quiet berry-librespot; then
+    sudo systemctl start berry-librespot
+    sleep 2
+fi
 
 if pgrep -f "go-librespot" > /dev/null; then
     echo "✓ go-librespot"
@@ -192,17 +215,17 @@ source venv/bin/activate
 pip install -q -r requirements.txt 2>/dev/null
 
 mkdir -p data/images
-> /tmp/berry.log
 
-# Start Berry (auto-detects GPU acceleration)
-nohup python -u berry.py --fullscreen > /tmp/berry.log 2>&1 &
-sleep 2
+# Start Berry via systemd
+sudo systemctl restart berry-native
+sleep 1
 
-if pgrep -f "berry.py" > /dev/null; then
+if systemctl is-active --quiet berry-native; then
     echo "✓ Berry"
 else
     echo "✗ Berry failed"
-    cat /tmp/berry.log
+    sudo journalctl -u berry-native -n 5 --no-pager
+    cat /home/admin/berry/berry.log 2>/dev/null || true
 fi
 ENDSSH
 
@@ -239,7 +262,7 @@ while true; do
             l)
                 echo ""
                 echo -e "${CYAN}━━━ Recent logs ━━━${NC}"
-                ssh $PI_HOST 'tail -20 /tmp/berry.log' 2>/dev/null
+                ssh $PI_HOST 'tail -20 /home/admin/berry/berry.log' 2>/dev/null
                 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━${NC}"
                 echo ""
                 ;;

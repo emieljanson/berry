@@ -2,9 +2,12 @@
 Touch Handler - Swipe gestures for carousel navigation.
 """
 import time
+import logging
 from typing import Tuple, Optional
 
 from ..config import SWIPE_THRESHOLD, SWIPE_VELOCITY, LONG_PRESS_TIME
+
+logger = logging.getLogger(__name__)
 
 
 class TouchHandler:
@@ -31,6 +34,7 @@ class TouchHandler:
         self.drag_offset = 0
         self.long_press_fired = False
         self.is_swiping = False
+        logger.debug(f'Touch down at ({pos[0]}, {pos[1]})')
     
     def on_move(self, pos: Tuple[int, int]) -> float:
         """Called on touch/mouse move. Returns drag offset."""
@@ -41,6 +45,7 @@ class TouchHandler:
         # Once user moves beyond threshold, mark as swiping (prevents long press)
         if not self.is_swiping and abs(self.drag_offset) > self.SWIPE_MOVEMENT_THRESHOLD:
             self.is_swiping = True
+            logger.debug(f'Swipe started, offset={self.drag_offset}px')
         
         return self.drag_offset
     
@@ -55,6 +60,7 @@ class TouchHandler:
         
         if time.time() - self.start_time >= LONG_PRESS_TIME:
             self.long_press_fired = True
+            logger.debug(f'Long press triggered at ({self.start_x}, {self.start_y})')
             return True
         
         return False
@@ -78,6 +84,7 @@ class TouchHandler:
         # Ignore if mostly vertical
         if abs(dy) > abs(dx) * 1.5:
             self.drag_offset = 0
+            logger.debug(f'Touch up: vertical swipe ignored, dy={dy}')
             return ('tap', 0)
         
         # Use minimum dt of 50ms to prevent extreme velocity on instant release
@@ -91,8 +98,9 @@ class TouchHandler:
         if abs(dx) >= SWIPE_THRESHOLD or abs(velocity) >= SWIPE_VELOCITY:
             self.drag_offset = 0
             action = 'right' if dx > 0 else 'left'
+            logger.debug(f'Touch up: swipe {action}, dx={dx}px, velocity={velocity:.2f}px/ms, dt={dt:.0f}ms')
             return (action, velocity)
         
         self.drag_offset = 0
+        logger.debug(f'Touch up: tap at ({pos[0]}, {pos[1]}), dt={dt:.0f}ms')
         return ('tap', 0)
-

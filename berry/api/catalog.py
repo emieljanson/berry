@@ -44,8 +44,9 @@ class CatalogManager:
         # Playlist covers collection: {context_uri: {hash: local_path}}
         self.playlist_covers: Dict[str, Dict[str, str]] = {}
         
-        # Track tried URLs to avoid repeated downloads
+        # Track tried URLs to avoid repeated downloads (with max size to prevent memory growth)
         self._tried_cover_urls: set = set()
+        self._max_tried_urls = 500
         
         # Cached items
         self._items: List[CatalogItem] = []
@@ -86,8 +87,14 @@ class CatalogManager:
             else:
                 logger.warning(f'Catalog not found at {self.catalog_path}')
                 self._items = []
+        except json.JSONDecodeError as e:
+            logger.error(f'Invalid JSON in catalog file: {e}', exc_info=True)
+            self._items = []
+        except (IOError, OSError) as e:
+            logger.error(f'Cannot read catalog file: {e}', exc_info=True)
+            self._items = []
         except Exception as e:
-            logger.error(f'Error loading catalog: {e}')
+            logger.error(f'Unexpected error loading catalog: {e}', exc_info=True)
             self._items = []
         
         return self._items
@@ -103,7 +110,14 @@ class CatalogManager:
             if self.catalog_path.exists():
                 return json.loads(self.catalog_path.read_text())
             return {'items': []}
-        except Exception:
+        except json.JSONDecodeError as e:
+            logger.warning(f'Invalid JSON in catalog: {e}')
+            return {'items': []}
+        except (IOError, OSError) as e:
+            logger.error(f'Cannot read catalog file: {e}', exc_info=True)
+            return {'items': []}
+        except Exception as e:
+            logger.error(f'Unexpected error loading catalog: {e}', exc_info=True)
             return {'items': []}
     
     def _save_raw(self, catalog: dict):
@@ -164,8 +178,10 @@ class CatalogManager:
                         self.image_hashes[hash_part] = f'/images/{file.name}'
             
             logger.info(f'Indexed {len(self.image_hashes)} images')
+        except (IOError, OSError) as e:
+            logger.warning(f'Error indexing images: {e}', exc_info=True)
         except Exception as e:
-            logger.warning(f'Error indexing images: {e}')
+            logger.warning(f'Unexpected error indexing images: {e}', exc_info=True)
     
     def _download_and_hash_image(self, image_url: str) -> tuple:
         """Download image and return (hash, buffer)."""
@@ -215,6 +231,12 @@ class CatalogManager:
         url_key = f'{context_uri}:{cover_url}'
         if url_key in self._tried_cover_urls:
             return False
+        
+        # Cleanup if cache is too large (prevent memory growth)
+        if len(self._tried_cover_urls) > self._max_tried_urls:
+            logger.debug(f'Clearing tried URLs cache ({len(self._tried_cover_urls)} entries)')
+            self._tried_cover_urls.clear()
+        
         self._tried_cover_urls.add(url_key)
         
         try:
@@ -234,8 +256,11 @@ class CatalogManager:
             self._update_playlist_covers_if_needed(context_uri, local_path)
             return True
             
+        except requests.RequestException as e:
+            logger.debug(f'Error downloading cover image: {e}')
+            return False
         except Exception as e:
-            logger.warning(f'Error collecting cover: {e}')
+            logger.warning(f'Error collecting cover: {e}', exc_info=True)
             return False
     
     def _update_playlist_covers_if_needed(self, context_uri: str, local_path: str):
@@ -256,8 +281,10 @@ class CatalogManager:
             item['images'] = current_images + [local_path]
             self._save_raw(catalog)
             logger.info(f'Updated saved playlist cover {len(item["images"])}/4')
+        except (json.JSONDecodeError, IOError, OSError) as e:
+            logger.warning(f'Error updating playlist covers: {e}', exc_info=True)
         except Exception as e:
-            logger.warning(f'Error updating playlist covers: {e}')
+            logger.warning(f'Unexpected error updating playlist covers: {e}', exc_info=True)
     
     def get_collected_covers(self, context_uri: str) -> Optional[List[str]]:
         """Get collected covers for a playlist."""
@@ -300,8 +327,11 @@ class CatalogManager:
                 try:
                     hash_short, buffer = self._download_and_hash_image(image_url)
                     local_image = self._save_image(hash_short, buffer)
+                except requests.RequestException as e:
+                    logger.warning(f'Error downloading image from {image_url[:50]}...: {e}')
+                    local_image = image_url  # Fallback to URL
                 except Exception as e:
-                    logger.warning(f'Error downloading image: {e}')
+                    logger.warning(f'Unexpected error downloading image: {e}', exc_info=True)
                     local_image = image_url  # Fallback to URL
             
             # Build new item
@@ -323,8 +353,11 @@ class CatalogManager:
             logger.info(f'Saved to catalog: {new_item["name"]}')
             return True
             
+        except (json.JSONDecodeError, IOError, OSError) as e:
+            logger.error(f'Error saving to catalog: {e}', exc_info=True)
+            return False
         except Exception as e:
-            logger.error(f'Error saving to catalog: {e}')
+            logger.error(f'Unexpected error saving to catalog: {e}', exc_info=True)
             return False
     
     def delete_item(self, item_id: str) -> bool:
@@ -346,8 +379,11 @@ class CatalogManager:
             logger.info(f'Deleted from catalog: {removed.get("name")}')
             return True
             
+        except (json.JSONDecodeError, IOError, OSError) as e:
+            logger.error(f'Error deleting from catalog: {e}', exc_info=True)
+            return False
         except Exception as e:
-            logger.error(f'Error deleting from catalog: {e}')
+            logger.error(f'Unexpected error deleting from catalog: {e}', exc_info=True)
             return False
     
     # ============================================
@@ -386,8 +422,10 @@ class CatalogManager:
             
             logger.debug(f'Saved progress: {track_name} @ {position // 1000}s')
             
+        except (json.JSONDecodeError, IOError, OSError) as e:
+            logger.warning(f'Error saving progress: {e}', exc_info=True)
         except Exception as e:
-            logger.warning(f'Error saving progress: {e}')
+            logger.warning(f'Unexpected error saving progress: {e}', exc_info=True)
     
     def get_progress(self, context_uri: str) -> Optional[dict]:
         """Get saved progress if < 24 hours old."""
@@ -416,8 +454,11 @@ class CatalogManager:
             logger.info(f'Resume: "{current_track.get("name")}" @ {current_track.get("position", 0) // 1000}s')
             return current_track
             
+        except (json.JSONDecodeError, IOError, OSError) as e:
+            logger.warning(f'Error getting progress: {e}', exc_info=True)
+            return None
         except Exception as e:
-            logger.warning(f'Error getting progress: {e}')
+            logger.warning(f'Unexpected error getting progress: {e}', exc_info=True)
             return None
     
     def clear_progress(self, context_uri: str):
@@ -434,8 +475,10 @@ class CatalogManager:
                 self._save_raw(catalog)
                 logger.debug(f'Cleared progress for: {item.get("name")}')
                 
+        except (json.JSONDecodeError, IOError, OSError) as e:
+            logger.warning(f'Error clearing progress: {e}', exc_info=True)
         except Exception as e:
-            logger.warning(f'Error clearing progress: {e}')
+            logger.warning(f'Unexpected error clearing progress: {e}', exc_info=True)
     
     # ============================================
     # CLEANUP
@@ -472,7 +515,10 @@ class CatalogManager:
                 logger.info(f'Cleanup: {deleted} unused images deleted')
             return deleted
             
+        except (IOError, OSError) as e:
+            logger.warning(f'Error cleaning up images: {e}', exc_info=True)
+            return 0
         except Exception as e:
-            logger.warning(f'Error cleaning up images: {e}')
+            logger.warning(f'Unexpected error cleaning up images: {e}', exc_info=True)
             return 0
 

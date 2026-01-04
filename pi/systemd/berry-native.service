@@ -8,9 +8,13 @@ Requires=berry-librespot.service
 Type=simple
 User=admin
 WorkingDirectory=/home/admin/berry
-ExecStart=/home/admin/berry/venv/bin/python berry.py --fullscreen
+ExecStartPre=-/bin/rm -f /home/admin/berry/berry.log
+ExecStart=/home/admin/berry/venv/bin/python -u berry.py --fullscreen
 Restart=always
 RestartSec=5
+TimeoutStopSec=5
+StandardOutput=append:/home/admin/berry/berry.log
+StandardError=append:/home/admin/berry/berry.log
 Environment=HOME=/home/admin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 

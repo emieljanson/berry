@@ -92,7 +92,9 @@ class SleepManager:
             with open(self.backlight_path, 'w') as f:
                 f.write(value)
             logger.debug(f'Backlight {"on" if on else "off"}')
+        except (IOError, OSError, PermissionError) as e:
+            # Not running on Pi or no permission - expected on non-Pi systems
+            logger.debug(f'Could not control backlight: {e}')
         except Exception as e:
-            # Not running on Pi or no permission
-            logger.warning(f'Could not control backlight: {e}')
+            logger.warning(f'Unexpected error controlling backlight: {e}', exc_info=True)
 

@@ -32,9 +32,10 @@ class LibrespotAPI:
         """Play a Spotify URI (album/playlist), optionally starting at a specific track."""
         try:
             body = {'uri': uri}
+            logger.info(f'API play: context={uri[:50]}...')
             if skip_to_uri:
                 body['skip_to_uri'] = skip_to_uri
-                logger.info(f'Resuming at track: {skip_to_uri}')
+                logger.info(f'  skip_to_uri: {skip_to_uri}')
             
             resp = self.session.post(
                 f'{self.base_url}/player/play',
@@ -47,7 +48,7 @@ class LibrespotAPI:
                 logger.warning(f'Play failed: {resp.status_code} {resp.text}')
             return resp.ok
         except requests.RequestException as e:
-            logger.error(f'Play error: {e}')
+            logger.error(f'Play error for URI {uri[:50] if uri else "None"}...: {e}', exc_info=True)
             return False
     
     def pause(self) -> bool:
@@ -57,7 +58,7 @@ class LibrespotAPI:
             logger.debug(f'Pause: {resp.status_code}')
             return resp.ok
         except requests.RequestException as e:
-            logger.error(f'Pause error: {e}')
+            logger.error('Pause error', exc_info=True)
             return False
     
     def resume(self) -> bool:
@@ -67,7 +68,7 @@ class LibrespotAPI:
             logger.debug(f'Resume: {resp.status_code}')
             return resp.ok
         except requests.RequestException as e:
-            logger.error(f'Resume error: {e}')
+            logger.error('Resume error', exc_info=True)
             return False
     
     def next(self) -> bool:
@@ -77,7 +78,7 @@ class LibrespotAPI:
             logger.debug(f'Next: {resp.status_code}')
             return resp.ok
         except requests.RequestException as e:
-            logger.error(f'Next error: {e}')
+            logger.error('Next error', exc_info=True)
             return False
     
     def prev(self) -> bool:
@@ -87,7 +88,7 @@ class LibrespotAPI:
             logger.debug(f'Prev: {resp.status_code}')
             return resp.ok
         except requests.RequestException as e:
-            logger.error(f'Prev error: {e}')
+            logger.error('Prev error', exc_info=True)
             return False
     
     def seek(self, position: int) -> bool:
@@ -101,7 +102,7 @@ class LibrespotAPI:
             logger.debug(f'Seek to {position}ms: {resp.status_code}')
             return resp.ok
         except requests.RequestException as e:
-            logger.error(f'Seek error: {e}')
+            logger.error(f'Seek error to position {position}ms', exc_info=True)
             return False
     
     def set_volume(self, level: int) -> bool:
@@ -115,7 +116,7 @@ class LibrespotAPI:
             logger.debug(f'Volume {level}%: {resp.status_code}')
             return resp.ok
         except requests.RequestException as e:
-            logger.error(f'Volume error: {e}')
+            logger.error(f'Volume error setting level {level}%', exc_info=True)
             return False
     
     def is_connected(self) -> bool:
