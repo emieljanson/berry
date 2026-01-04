@@ -695,7 +695,7 @@ class Berry:
         """Handle touch/mouse down."""
         x, y = pos
         
-        # Check button clicks
+        # Check button clicks (add/delete)
         if self._check_button_click(pos):
             return
         
@@ -704,13 +704,16 @@ class Berry:
             self.delete_mode_id = None
             self.renderer.invalidate()
         
+        # Handle control buttons (just show pressed state, action on release)
+        if CONTROLS_Y - PLAY_BTN_SIZE <= y <= CONTROLS_Y + PLAY_BTN_SIZE:
+            self._handle_button_down(pos)
+            return
+        
         # Handle carousel swipes
         if CAROUSEL_Y <= y <= CAROUSEL_Y + COVER_SIZE + 50:
             self.touch.on_down(pos)
             self.user_interacting = True
             self.play_timer.cancel()
-        else:
-            self._handle_button_tap(pos)
     
     def _check_button_click(self, pos) -> bool:
         """Check if click is on add/delete button."""
@@ -732,6 +735,11 @@ class Berry:
     
     def _handle_touch_up(self, pos):
         """Handle touch/mouse up."""
+        # Handle button release first (separate from carousel)
+        if self._pressed_button:
+            self._handle_button_up(pos)
+            return
+        
         if not self.touch.dragging:
             return
         
@@ -783,20 +791,8 @@ class Berry:
                 logger.info(f'Carousel tap IGNORED (disconnected)')
                 logger.info(f'  connected={self.connected}, fail_count={self._connection_fail_count}')
     
-    def _handle_button_tap(self, pos):
-        """Handle direct tap on control buttons with debouncing."""
-        # Debounce: ignore taps within 300ms of each other
-        now = time.time()
-        if now - self._last_action_time < self._action_debounce:
-            logger.debug(f'Button tap debounced at ({pos[0]}, {pos[1]})')
-            return
-        
-        # Don't process API actions if disconnected (except volume which is local too)
-        if not self.connected and not self.mock_mode:
-            logger.info(f'Button tap IGNORED (disconnected) at ({pos[0]}, {pos[1]})')
-            logger.info(f'  connected={self.connected}, fail_count={self._connection_fail_count}')
-            return
-        
+    def _handle_button_down(self, pos):
+        """Handle button press down - show pressed state only, action on release."""
         x, y = pos
         center_x = SCREEN_WIDTH // 2
         btn_spacing = BTN_SPACING
@@ -804,31 +800,81 @@ class Berry:
         right_cover_edge = center_x + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
         vol_x = right_cover_edge - BTN_SIZE // 2
         
+        button = None
+        if center_x - btn_spacing - BTN_SIZE <= x <= center_x - btn_spacing + BTN_SIZE:
+            button = 'prev'
+        elif center_x - PLAY_BTN_SIZE <= x <= center_x + PLAY_BTN_SIZE:
+            button = 'play'
+        elif center_x + btn_spacing - BTN_SIZE <= x <= center_x + btn_spacing + BTN_SIZE:
+            button = 'next'
+        elif vol_x - BTN_SIZE <= x <= vol_x + BTN_SIZE:
+            button = 'volume'
+        
+        if button:
+            logger.debug(f'Button down: {button}')
+            self._pressed_button = button
+            self._pressed_time = time.time()
+            # Force immediate visual feedback
+            self.renderer.invalidate()  # Force full redraw to show pressed state
+            self._draw()
+            pygame.display.flip()
+    
+    def _handle_button_up(self, pos):
+        """Handle button release - execute action if still on same button."""
+        if not self._pressed_button:
+            return
+        
+        pressed = self._pressed_button
+        self._pressed_button = None
+        
+        # Debounce
+        now = time.time()
+        if now - self._last_action_time < self._action_debounce:
+            logger.debug(f'Button release debounced')
+            self.renderer.invalidate()
+            return
+        
+        # Don't process API actions if disconnected
+        if not self.connected and not self.mock_mode:
+            logger.debug(f'Button release ignored (disconnected)')
+            self.renderer.invalidate()
+            return
+        
+        x, y = pos
+        center_x = SCREEN_WIDTH // 2
+        btn_spacing = BTN_SPACING
+        right_cover_edge = center_x + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
+        vol_x = right_cover_edge - BTN_SIZE // 2
+        
+        # Check which button the release is on
+        released_on = None
         if CONTROLS_Y - PLAY_BTN_SIZE <= y <= CONTROLS_Y + PLAY_BTN_SIZE:
-            button_pressed = None
-            
             if center_x - btn_spacing - BTN_SIZE <= x <= center_x - btn_spacing + BTN_SIZE:
-                button_pressed = 'prev'
-                threading.Thread(target=self.api.prev, daemon=True).start()
+                released_on = 'prev'
             elif center_x - PLAY_BTN_SIZE <= x <= center_x + PLAY_BTN_SIZE:
-                button_pressed = 'play'
-                self._toggle_play()
+                released_on = 'play'
             elif center_x + btn_spacing - BTN_SIZE <= x <= center_x + btn_spacing + BTN_SIZE:
-                button_pressed = 'next'
-                threading.Thread(target=self.api.next, daemon=True).start()
+                released_on = 'next'
             elif vol_x - BTN_SIZE <= x <= vol_x + BTN_SIZE:
-                button_pressed = 'volume'
-                self._toggle_volume()
+                released_on = 'volume'
+        
+        # Execute action only if released on the same button that was pressed
+        if released_on == pressed:
+            logger.info(f'Button release: {released_on}')
+            logger.debug(f'  connected={self.connected}, playing={self.now_playing.playing}')
+            self._last_action_time = now
+            self._play_click()
             
-            if button_pressed:
-                logger.info(f'Button press: {button_pressed}')
-                logger.debug(f'  connected={self.connected}, playing={self.now_playing.playing}')
-                logger.debug(f'  paused={self.now_playing.paused}, context={self.now_playing.context_uri}')
-                self._last_action_time = now
-                self._pressed_button = button_pressed
-                self._pressed_time = now
-                self._play_click()
-                self.renderer.invalidate()
+            if released_on == 'prev':
+                threading.Thread(target=self.api.prev, daemon=True).start()
+            elif released_on == 'play':
+                self._toggle_play()
+            elif released_on == 'next':
+                threading.Thread(target=self.api.next, daemon=True).start()
+            elif released_on == 'volume':
+                self._toggle_volume()
+        
+        self.renderer.invalidate()
     
     def _snap_to(self, target_index: int):
         """Snap carousel to a specific index."""
@@ -1398,11 +1444,6 @@ class Berry:
             not self.carousel.settled or 
             self.play_timer.item is not None
         )
-        
-        # Reset pressed button state after 150ms
-        if self._pressed_button and time.time() - self._pressed_time > 0.15:
-            self._pressed_button = None
-            self.renderer.invalidate()
         
         # Check play timer (only if connected)
         if self.connected or self.mock_mode:
