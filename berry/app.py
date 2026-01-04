@@ -599,6 +599,8 @@ class Berry:
         if not context_uri:
             if self.temp_item:
                 self.temp_item = None
+                # Cleanup temp images when temp item is removed
+                self.catalog_manager.cleanup_temp_images()
                 self._update_carousel_max_index()
                 self.renderer.invalidate()
             return
@@ -608,32 +610,34 @@ class Berry:
         if in_catalog:
             if self.temp_item:
                 self.temp_item = None
+                # Cleanup temp images when temp item is removed
+                self.catalog_manager.cleanup_temp_images()
                 self._update_carousel_max_index()
                 self.renderer.invalidate()
             return
         
         # Create/update tempItem
         is_playlist = 'playlist' in context_uri
-        collected_covers = self.catalog_manager.get_collected_covers(context_uri) if is_playlist else None
-        
-        current_cover_count = len(self.temp_item.images or []) if self.temp_item else 0
-        new_cover_count = len(collected_covers or [])
         
         needs_update = (
             not self.temp_item or 
-            self.temp_item.uri != context_uri or
-            new_cover_count > current_cover_count
+            self.temp_item.uri != context_uri
         )
         
         if needs_update:
+            # Download temp image if URL provided
+            image_url = self.now_playing.track_cover
+            local_image = None
+            if image_url and image_url.startswith('http'):
+                local_image = self.catalog_manager.download_temp_image(image_url)
+            
             self.temp_item = CatalogItem(
                 id='temp',
                 uri=context_uri,
                 name=self.now_playing.track_album or ('Playlist' if is_playlist else 'Album'),
                 type='playlist' if is_playlist else 'album',
                 artist=self.now_playing.track_artist,
-                image=self.now_playing.track_cover,
-                images=collected_covers,
+                image=local_image or image_url,  # Use local image if available, else URL
                 is_temp=True
             )
             self._update_carousel_max_index()
@@ -1243,6 +1247,8 @@ class Berry:
             self.catalog_manager.load()
             self._update_carousel_max_index()
             self.image_cache.preload_catalog(self.catalog_manager.items)
+            # Cleanup temp images after saving (they're now permanent)
+            self.catalog_manager.cleanup_temp_images()
             self.temp_item = None
             self.renderer.invalidate()
         
@@ -1493,7 +1499,6 @@ class Berry:
             if new_cover_added:
                 # Update temp_item with new covers and refresh UI
                 self._update_temp_item()
-                self.image_cache.invalidate_composites()
         
         # Check sleep
         self.sleep_manager.check_sleep(self.now_playing.playing)

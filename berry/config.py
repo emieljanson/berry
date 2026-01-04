@@ -25,8 +25,8 @@ BACKEND_URL = os.environ.get('BACKEND_URL', 'http://localhost:3001')
 # PATHS
 # ============================================
 
-# Use backend's data folder (shared catalog & images)
-DATA_DIR = Path(__file__).parent.parent.parent / 'backend' / 'data'
+# Use data folder (shared catalog & images)
+DATA_DIR = Path(__file__).parent.parent / 'data'
 CATALOG_PATH = DATA_DIR / 'catalog.json'
 IMAGES_DIR = DATA_DIR / 'images'
 ICONS_DIR = Path(__file__).parent.parent / 'icons'

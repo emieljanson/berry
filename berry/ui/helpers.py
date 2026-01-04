@@ -5,34 +5,6 @@ import pygame
 import pygame.gfxdraw
 
 
-def draw_rounded_rect(surface: pygame.Surface, color: tuple, rect: tuple, radius: int):
-    """Draw a rounded rectangle."""
-    pygame.draw.rect(surface, color, rect, border_radius=radius)
-
-
-def apply_rounded_corners(surface: pygame.Surface, radius: int) -> pygame.Surface:
-    """Apply rounded corners to a surface."""
-    size = surface.get_size()
-    # Create a mask with rounded corners
-    mask = pygame.Surface(size, pygame.SRCALPHA)
-    pygame.draw.rect(mask, (255, 255, 255, 255), (0, 0, size[0], size[1]), border_radius=radius)
-    # Create result surface
-    result = pygame.Surface(size, pygame.SRCALPHA)
-    result.blit(surface, (0, 0))
-    # Apply mask
-    result.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
-    return result
-
-
-def draw_rounded_triangle(surface: pygame.Surface, color: tuple, points: list, aa: bool = True):
-    """Draw a triangle with anti-aliasing for smoother edges."""
-    if aa:
-        pygame.gfxdraw.aapolygon(surface, points, color)
-        pygame.gfxdraw.filled_polygon(surface, points, color)
-    else:
-        pygame.draw.polygon(surface, color, points)
-
-
 def draw_aa_circle(surface: pygame.Surface, color: tuple, center: tuple, radius: int):
     """Draw an anti-aliased filled circle."""
     cx, cy = int(center[0]), int(center[1])

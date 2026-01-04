@@ -353,21 +353,14 @@ class Renderer:
             if draw_x + size < 0 or draw_x > SCREEN_WIDTH:
                 continue
             
-            is_playlist = item.type == 'playlist' or 'playlist' in (item.uri or '')
-            has_playlist_images = is_playlist and item.images and len(item.images) >= 1
-            
+            # All items (albums and playlists) use single image field
+            # Composites for playlists are pre-rendered and stored as single image
             if is_center:
-                if has_playlist_images:
-                    cover = self.image_cache.get_composite(item.images, size)
-                else:
-                    cover = self.image_cache.get(item.image, size)
+                cover = self.image_cache.get(item.image, size)
                 center_cover_rect = (draw_x, draw_y, size, size)
                 center_item = item
             else:
-                if has_playlist_images:
-                    cover = self.image_cache.get_composite_dimmed(item.images, size)
-                else:
-                    cover = self.image_cache.get_dimmed(item.image, size)
+                cover = self.image_cache.get_dimmed(item.image, size)
             
             self.screen.blit(cover, (draw_x, draw_y))
         
