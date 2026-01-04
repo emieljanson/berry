@@ -850,6 +850,17 @@ class Berry:
                     logger.info('Pausing for navigation...')
                     self._paused_for_navigation = True
                     self._paused_context_uri = self.now_playing.context_uri
+                    # Update UI immediately (optimistic update)
+                    self.now_playing = NowPlaying(
+                        playing=False, paused=True, stopped=False,
+                        context_uri=self.now_playing.context_uri,
+                        track_name=self.now_playing.track_name,
+                        track_artist=self.now_playing.track_artist,
+                        track_album=self.now_playing.track_album,
+                        track_cover=self.now_playing.track_cover,
+                        position=self.now_playing.position,
+                        duration=self.now_playing.duration,
+                    )
                     threading.Thread(target=self.api.pause, daemon=True).start()
             
             item = items[target_index]
@@ -863,6 +874,17 @@ class Berry:
                     self._paused_for_navigation = False
                     self._paused_context_uri = None
                     self.play_timer.cancel()
+                    # Update UI immediately (optimistic update)
+                    self.now_playing = NowPlaying(
+                        playing=True, paused=False, stopped=False,
+                        context_uri=self.now_playing.context_uri,
+                        track_name=self.now_playing.track_name,
+                        track_artist=self.now_playing.track_artist,
+                        track_album=self.now_playing.track_album,
+                        track_cover=self.now_playing.track_cover,
+                        position=self.now_playing.position,
+                        duration=self.now_playing.duration,
+                    )
                     threading.Thread(target=self.api.resume, daemon=True).start()
                 elif not self._is_item_playing(item):
                     logger.info(f'PlayTimer starting for: {item.name} (index={target_index})')
@@ -920,10 +942,32 @@ class Berry:
         if self.now_playing.playing:
             logger.info('Pausing...')
             self._play_in_progress = False  # Clear any pending play state
+            # Update UI immediately (optimistic update)
+            self.now_playing = NowPlaying(
+                playing=False, paused=True, stopped=False,
+                context_uri=self.now_playing.context_uri,
+                track_name=self.now_playing.track_name,
+                track_artist=self.now_playing.track_artist,
+                track_album=self.now_playing.track_album,
+                track_cover=self.now_playing.track_cover,
+                position=self.now_playing.position,
+                duration=self.now_playing.duration,
+            )
             threading.Thread(target=self.api.pause, daemon=True).start()
         elif self.now_playing.paused:
             logger.info('Resuming...')
             self.auto_pause.restore_volume_if_needed()
+            # Update UI immediately (optimistic update)
+            self.now_playing = NowPlaying(
+                playing=True, paused=False, stopped=False,
+                context_uri=self.now_playing.context_uri,
+                track_name=self.now_playing.track_name,
+                track_artist=self.now_playing.track_artist,
+                track_album=self.now_playing.track_album,
+                track_cover=self.now_playing.track_cover,
+                position=self.now_playing.position,
+                duration=self.now_playing.duration,
+            )
             threading.Thread(target=self.api.resume, daemon=True).start()
         elif items:
             item = items[self.selected_index]
