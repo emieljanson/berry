@@ -1,0 +1,44 @@
+{
+  "total_books": 9,
+  "total_audiobooks": 2,
+  "audiobooks": [
+    {
+      "id": "444567925",
+      "title": "Juf Braaksel en het geheimzinnige plan",
+      "url": "https://www.onlinebibliotheek.nl/catalogus/444567925/juf-braaksel-en-het-geheimzinnige-plan-carry-slee",
+      "image": "https://www.onlinebibliotheek.nl/images/covers/444567925.jpg",
+      "state": "4ba05c82-5277-4161-bfde-987210fa5622",
+      "media_id": "692d0b473f050e331c3ce94e",
+      "key_id": "695bb761ed1ed54b8503a4af",
+      "metadata": {
+        "title": "Juf Braaksel en het geheimzinnige plan",
+        "author": "Carry Slee",
+        "duration": "02u 15m30",
+        "cover": "https://covers.odilo.io/...",
+        "synopsis": "..."
+      },
+      "chapters": [
+        {
+          "number": 1,
+          "title": "Hoofdstuk 1",
+          "duration": 972,
+          "duration_formatted": "16m 12s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr9686577/001_001.mp3?Policy=...&Signature=...&Key-Pair-Id=..."
+        },
+        {
+          "number": 2,
+          "title": "Hoofdstuk 2",
+          "duration": 1080,
+          "duration_formatted": "18m 0s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr9686577/002_002.mp3?Policy=...&Signature=...&Key-Pair-Id=..."
+        }
+      ],
+      "total_chapters": 2,
+      "error": null
+    }
+  ]
+}
+
+

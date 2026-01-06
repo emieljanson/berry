@@ -1,0 +1,371 @@
+{
+  "total_books": 9,
+  "total_audiobooks": 2,
+  "downloads_dir": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads",
+  "download_stats": {
+    "total_files": 34,
+    "downloaded": 34,
+    "failed": 0,
+    "skipped": 0
+  },
+  "audiobooks": [
+    {
+      "id": "444567925",
+      "title": "Carry SleeJuf Braaksel en het geheimzinnige plan",
+      "url": "https://www.onlinebibliotheek.nl/catalogus/444567925/juf-braaksel-en-het-geheimzinnige-plan-carry-slee",
+      "image": "https://v2.leibniz.zbkb.nl/assets/id/PPN%3A444567925?aid=kb-iblv&sid=19&dts=1766842663136&width=132&sig=bdcfebdd8b1519f9c464d40686ca1859deb63b2c60545fc9ea6b424c4d7e7a84",
+      "state": "ca4ff981-74e4-4f63-b7a2-1f3499222ee4",
+      "media_id": "679c3dd0288cc769fb7686f4",
+      "key_id": "695bda83ed1ed54b8505fe38",
+      "metadata": {
+        "cover": "assets/images/default_cover.png",
+        "title": "",
+        "author": null,
+        "published": null,
+        "description": null,
+        "duration": null,
+        "notes": null,
+        "synopsis": "",
+        "performers": [],
+        "previewUrl": "https://v2.leibniz.zbkb.nl/assets/id/PPN%3A444567925?aid=kb-eld&sid=15&dts=1748270679283&sig=074c5623751865e46f4bbad78437cbceb857f9bb576428abc5846265abf96174&type=preview&fileType=mp3"
+      },
+      "chapters": [
+        {
+          "number": 1,
+          "title": "Juf Braaksel en het geheimzinnige plan",
+          "duration": 12408,
+          "duration_formatted": "3u 26m 48s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/001_Juf_Braaksel_en_het_geheimzinnige_plan.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAwMV9KdWZfQnJhYWtzZWxfZW5faGV0X2dlaGVpbXppbm5pZ2VfcGxhbi5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=JOir2Ys3xNoUPnissYSDXaqEIZKC95zraFXxAWV1brafr9yUVCwuWPWB-63t3GuZtlf--yPKMt7nT1yELZ-a3bmVviaeoo0goH5puAmlP8v4aw37GVsMPtjNOiO2d5W6Eo59KA8xx0RBG0jnXHCUOgesjQFFoICMOpYM0xzb1Vw_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/01_Juf Braaksel en het geheimzinnige plan.mp3"
+        },
+        {
+          "number": 2,
+          "title": "1",
+          "duration": 604342,
+          "duration_formatted": "167u 52m 22s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/002_1.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAwMl8xLm1wMyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2OTQzNjIyN319fV19&Signature=A7ujaP69ASxWWm9cDwW50l1ZDv0OfkoNSDJdVoJgnon~sJCCEjVY3F6Kxz1HBMnP4lDdZrlKtSztutbPxumHpKN4MO0qESWa5akmTgHCH0jeFtGsQEKEb9z9LHBTMSQau1P55YrtfrYRuAIgeBKXQOya4RH9hCWPML2A8wRhuBg_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/02_1.mp3"
+        },
+        {
+          "number": 3,
+          "title": "2",
+          "duration": 484466,
+          "duration_formatted": "134u 34m 26s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/003_2.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAwM18yLm1wMyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2OTQzNjIyN319fV19&Signature=LhRkDqryRsBe46RZ6vdfE~adPiO8JzsHqbohDPWh~VlhQLbp3s9N1niK7m7ra2C-twPgmkPD6ns1U9Ob2uSRjlM8~Z9H~iWKcTapDMkuZ6wJqDjV~KkAvfju0AM~2chwp3tPgcUxuLkC9cpx~3n25O80wof3bzQf7TDRugQvehg_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/03_2.mp3"
+        },
+        {
+          "number": 4,
+          "title": "3",
+          "duration": 392385,
+          "duration_formatted": "108u 59m 45s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/004_3.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAwNF8zLm1wMyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2OTQzNjIyN319fV19&Signature=gWIxESfgTFO1aOnY87l9bOYsPEXXJ6mmdEMg1jcgr2i8XTpSWMXKf12qxNLtXwgayqwR2AfCVkhOK~nvp~JwREaagHh98Z4KoWUIfnOySe0HNT8MRU~7CAiQts52Lm0D9wW~FoAmMDTB~eGYln6psQxWSpRn46zDsAHS3toLBJE_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/04_3.mp3"
+        },
+        {
+          "number": 5,
+          "title": "4",
+          "duration": 884793,
+          "duration_formatted": "245u 46m 33s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/005_4.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAwNV80Lm1wMyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2OTQzNjIyN319fV19&Signature=LE8L3EcH8wd1f-rD4eypMNt1-mUQbwSiyOSK5FYTLqYmyKF8Otx3s~tVGGSCHJ3XVMWZ3Hf1ylGTm8Vbvjl4tNjIsE~78c7myJENKRE3vyxGuUkDXMAt26zgITiXDSHC4Ke5RhmtIN6Q2fGQEPFDxZKSs7gmrKmXk4BsDIZxEW4_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/05_4.mp3"
+        },
+        {
+          "number": 6,
+          "title": "5",
+          "duration": 617377,
+          "duration_formatted": "171u 29m 37s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/006_5.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAwNl81Lm1wMyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2OTQzNjIyN319fV19&Signature=UW9J-6~xB4OlPP8OwzeoiLygWFkAYQRudeRWsok-jtNyaniHdjC4hIhby9EBXlWDp0TYy0T5t1guycAiWWa3chP~EECX1xxPqAKRudOWRUOAYsfbAMEldSAGBAhhEOlgg4vmmZnq~gGmO4tfJb8-EuqdV~dO~FvEuBdbQKZUS-I_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/06_5.mp3"
+        },
+        {
+          "number": 7,
+          "title": "6",
+          "duration": 455392,
+          "duration_formatted": "126u 29m 52s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/007_6.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAwN182Lm1wMyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2OTQzNjIyN319fV19&Signature=SfyPZoHdqlsLcf~l51olQWcL1FFMt4I9qtYKDPX~rQX0esAOWQ3vpWrtiwrXJGd-CNN90ZjJmDZSIjvlamd2hbS21sAhLQpjwIxtA2ug4Ez5EGPnSpy2k6nSgvp2zfka7sVKXurju7GVnL8dMwpvtcwxInvGDyXGmjI7fGTtAOI_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/07_6.mp3"
+        },
+        {
+          "number": 8,
+          "title": "7",
+          "duration": 709485,
+          "duration_formatted": "197u 4m 45s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/008_7.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAwOF83Lm1wMyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2OTQzNjIyN319fV19&Signature=d2VDlCWq6PPten-k92aRXiZbUi~j-UMUurKJUpUwLq73bGNNHVrLlg3StonVQ5pjP19qsDI2fdKmnT0ZIGVir8CKu4NIB2qejs9Rkayp75QXuA8~hTbZdpqsimFTTlSfi924M0zK-5RtTjw37D7BCed76FBc-MS0qqy5hv4x9r4_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/08_7.mp3"
+        },
+        {
+          "number": 9,
+          "title": "8",
+          "duration": 553221,
+          "duration_formatted": "153u 40m 21s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/009_8.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAwOV84Lm1wMyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2OTQzNjIyN319fV19&Signature=Lb~xobpihAtz8vEvFx9NDvI81MfWkUAWwOueSzOAUj7k2D~3QlizpHgp47H1Nbenu5Uo-vlrph8Kb0jJ-dsPG3tFlUuQ7Mvurpex7sw1ONU8OI3RM3jj8gREPbD2cMGBRhKhqRyrjax15NdBhDyW5pinjKKDlIL3BepHaOGV8MM_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/09_8.mp3"
+        },
+        {
+          "number": 10,
+          "title": "9",
+          "duration": 277864,
+          "duration_formatted": "77u 11m 4s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/010_9.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAxMF85Lm1wMyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc2OTQzNjIyN319fV19&Signature=Fhz4b~riANh0whhPe1of8w8frH396zHdBDNlXGwIbZyiwwMMM4G2Y8-ZIrmqLCrsD95d6Lr53LV4gNdVQwUG7b1souVQ3CCgJqtXUuBEsQ7yHDxU02uUVFJ1MzmzVJ0AMUP8ttkIpWB8NERnQIsHwCEWeCt1eQEtT2fep~R79H0_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/10_9.mp3"
+        },
+        {
+          "number": 11,
+          "title": "10",
+          "duration": 533159,
+          "duration_formatted": "148u 5m 59s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/011_10.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAxMV8xMC5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=bVj9vYjuzvFJVqBwP4XXPc~NvRt3vdSXX92MQ8PlPT535-x6xRlD91~i7I7F-kq~V9GT2VL4T6~jimk7qooyJpT3bXz~bqOu7uWlq5Hj9vmMVurQg0k1lPp797~-1Rw4umMyLCp2g69D5nj39jaMNeh4sKjsqwukkguQ~ovosHw_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/11_10.mp3"
+        },
+        {
+          "number": 12,
+          "title": "11",
+          "duration": 378984,
+          "duration_formatted": "105u 16m 24s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/012_11.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAxMl8xMS5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=hGLmekN5s2b2jlCaycQRitwbSCFrw1jkQGzXHd5abyY9AZL19VFjw~s9zWWvHx5EaCZeqaHOTBI3NX540hhd-XVzMh2ILLsicfJC4uQ3y~uZj-w7j1SmBztt5XNofMOsSBVkv97RM-AMfN1W9oCsgnnuoIn1B7b4AXYmlR5P124_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/12_11.mp3"
+        },
+        {
+          "number": 13,
+          "title": "12",
+          "duration": 880666,
+          "duration_formatted": "244u 37m 46s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/013_12.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAxM18xMi5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=GqBQ4~oSDyuDuQVFzRtAfnB7sRkdShaOH9yyrnNXtqunPGVXEhk9JUnV47aOjbNVLF4EvasioE5OVR8Iibt36sJW2GOHTHHtRZcslVL9ecCjnQ7sgAWhW3SpYCw7OmZiL1kKM8cvwoP73TsfgiTK6U967ys4wqYbFE4kmnjChr0_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/13_12.mp3"
+        },
+        {
+          "number": 14,
+          "title": "13",
+          "duration": 845505,
+          "duration_formatted": "234u 51m 45s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/014_13.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAxNF8xMy5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=N5aS~9sXU1Nl6EOg9WOnxK7vsLCygIBcPfQgaXXKarvzpwqHPu25yrlBaykwyMR1BBtM9ES91zr~dmfiMoFhXwgh6sisGrlaOKmRwKlJH7kXy1PBp~TP-PcZGEQ2IDSrq17agJ6z1hsdPurpmNQHhvNl-K0p8ZkTvrlnJgwrj3w_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/14_13.mp3"
+        },
+        {
+          "number": 15,
+          "title": "14",
+          "duration": 695301,
+          "duration_formatted": "193u 8m 21s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/015_14.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAxNV8xNC5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=gCONrbankunvIoiIERF~Way2M3ZrE5I8uy06gAey~PWFpkFTSrqh26CWuJQZMCn9tORcwLvHCLoqrWoj9dsd8ptJ4W5AFvV4lnE1PNAccupxuBbfu29i~6nIyQDOPh-4hTCahBsyLdEu5h64dOJDJa70XvVaoCcoN9GqJbsbuZk_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/15_14.mp3"
+        },
+        {
+          "number": 16,
+          "title": "15",
+          "duration": 353227,
+          "duration_formatted": "98u 7m 7s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/016_15.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAxNl8xNS5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=f8U314fzxd8-i-5anLMV4acZgrdjFIpIHWJFeiRBFAOqwcKjJNZqpPhFlQtRS5heXnBfAdmyiFbAaBsUd5pPdpS3XhOwx0lSdWcVWstx6Z6FRFUrCIj6YjATgfRmub8gJ3XakDo7OKE6KoWUy-T~xfPO7VA4TjSHe1VYO3apdQ4_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/16_15.mp3"
+        },
+        {
+          "number": 17,
+          "title": "16",
+          "duration": 978442,
+          "duration_formatted": "271u 47m 22s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/017_16.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAxN18xNi5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=JJKAjQKFI1iuu-hee~ci6Q5T7hEC6GRrZK-Z9Zu61mizBJ~Tv-HGdbHP3mJ0XYrcoEFwLQlwAqnJqYVb5J4aae6sY0L31GUsCm29O2ZECNcn4O9RQLQo7WAVlrSEU5cPOV~cXYJTP5b~z8NxWAgCmfLlEPrYlzOGYvEpJl7b4lI_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/17_16.mp3"
+        },
+        {
+          "number": 18,
+          "title": "17",
+          "duration": 573257,
+          "duration_formatted": "159u 14m 17s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/018_17.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAxOF8xNy5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=Mt2yT9lqrhyjs12ivpDAz3iwH0V4o64MtvFWAzycPKaPSowh82-0NyL1Y85SmVZKuxKKScLlnBPbunqUGGSi4XNrp6mLPmIz-oW82kevQ0JPNlpcfajGdf1XNHPb67CcWpQaL1ENFiCqRMXMsCXz2aSqSO5v3NOEZnuKto5DK-Q_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/18_17.mp3"
+        },
+        {
+          "number": 19,
+          "title": "18",
+          "duration": 1106390,
+          "duration_formatted": "307u 19m 50s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/019_18.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAxOV8xOC5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=UlYoMdMcyE0s2gqNxIrBUbc9gvvUpRUTLvXF4jETbFVukcboZpzdWUttMIaqwD-h7sDT5KgjWGb2aUHLPAYfNBk388nh4UtijuGiCZGZdtw7gHvNUnQFh~BHKDW1fzFxlUYqOIuQz9Zr8-rcFzWlbOOsBvmxSWuPYMQmPicpn6o_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/19_18.mp3"
+        },
+        {
+          "number": 20,
+          "title": "19",
+          "duration": 843284,
+          "duration_formatted": "234u 14m 44s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/020_19.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAyMF8xOS5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=CSLij8Eu17iYhJVUqK9tsm8G3Hp-M8FL-JwRz4GC2nAQVfQXdvdW0kvrE4DqE0i5lN6YrsYIDuLrkfUYblJCmq6xLQhg3fX7OcVTeq4f19lxKL07MLO7peEj6Z8B6z1c11z6qrn2dC4IvxSrXL3P0sgFFal4QRBH1T2M-zyhR50_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/20_19.mp3"
+        },
+        {
+          "number": 21,
+          "title": "20",
+          "duration": 709328,
+          "duration_formatted": "197u 2m 8s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/021_20.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAyMV8yMC5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=aNtpgaS8z4ciJ2HUCK8ZqIbDS~OVaymzg7Tf4b~sd3nn8nyyIkYZ6twcURPxUw9f9tzy0KTIu-irtshvhWXxiLTLIkT-Kek1JSJuRjRX10mLVAwdCP8JwQvMhb1mL23uOFtcwrmrE4juvvAQWKgttSLhmVa93msLFriuDuILd3M_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/21_20.mp3"
+        },
+        {
+          "number": 22,
+          "title": "21",
+          "duration": 814184,
+          "duration_formatted": "226u 9m 44s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/022_21.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAyMl8yMS5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=OrtX4fE3cRpruek7Dx50y6n9uVsiVtR7fkoyNX5RMYGj79WQVeTr0eKYyzWDxAlnN6hyHutKtvyAAjHPvZg8rpDlQwTAdDBmYiFm2cXBth5CjvqeJvafX3j7A7Nz5lfY72uYPDd~EbgtEDdv52NNQJ3uN3TpZjngv0-ARcPERO8_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/22_21.mp3"
+        },
+        {
+          "number": 23,
+          "title": "22",
+          "duration": 434860,
+          "duration_formatted": "120u 47m 40s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/023_22.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAyM18yMi5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=LKkXThijOOHO98K44ysR~8fMQsbbfp6ZbyFwv-~ycCrItbWypEb5JodBU98ZnxG0BFFgBoLG~KoqbzEARYKIp2mfdC5oyWvx-fU83vZ1DlKPnpoYKT6zrmU9zkpAzD57LIIhVQIFUPgqeaflntNP4sAE1mEhDj5UII7Z28FTxQE_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/23_22.mp3"
+        },
+        {
+          "number": 24,
+          "title": "23",
+          "duration": 133851,
+          "duration_formatted": "37u 10m 51s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/024_23.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAyNF8yMy5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=EmGHW2ouczm0L3E36p7JY6Gs2f23ffmvI8CYN4B-9ROdbfiPhyg3xE84sfXUF69stUWm3uvGih5DQzLXE0g4RVL7DdgqMx8wY9tK2BickkRkAENkxBBPt9FxcOG5TI6Rg06vJoOHLXiUGwWjBjt3xYG2ZKUIOdTaoVopMlpC2CM_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/24_23.mp3"
+        },
+        {
+          "number": 25,
+          "title": "24",
+          "duration": 732160,
+          "duration_formatted": "203u 22m 40s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/025_24.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAyNV8yNC5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=FdZTJ6FVUiAuLlYXJGtyZvfdGMRMYMIAab-gmmIXyZ~Fc27~ux8nfG-sCYPdgyFTZjTD--RWH9vZx1rOKerBrWHiQmCQOPNyOF8DU8b9LsyDEs5UvrX2uQ3RYSg1F4XyWPJDGBykTrooDPMub8dYf0NSfwzS0E9yuqDFONAeK5I_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/25_24.mp3"
+        },
+        {
+          "number": 26,
+          "title": "25",
+          "duration": 373786,
+          "duration_formatted": "103u 49m 46s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/026_25.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAyNl8yNS5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=FoI9gfunBAbaDkremURQv6A~UlJ4CSlCDUHKSZ6kC4OtiBwO9Ai~SMgqABsrcqVgNFviT~OKXZhN-I0N9V9y30J3iZEq-Rl1Pl-uR6fk39l7cQi1E6NwrLwszk0WgxzvfPy1u2hK3mBQNng8Z~VRvdlRMz6TykUyVf1~~kWVTAg_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/26_25.mp3"
+        },
+        {
+          "number": 27,
+          "title": "26",
+          "duration": 348813,
+          "duration_formatted": "96u 53m 33s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/027_26.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAyN18yNi5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=NWfzrEJe7aNB2WT5y1SWuTz~FGpOtoWSFk6UW2tiwDllak5lVLwE77t5VZ5NJKTDsTzwpvyOOyxH4mxlmv5ZKUlhvDZDsJ3PcNODGuofmucNmznCjxdIgIprF9nK~2fBfGeSwfGvrgSiAagdKydvkbNcUdYICK6VRan-2GZigXs_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/27_26.mp3"
+        },
+        {
+          "number": 28,
+          "title": "27",
+          "duration": 1531637,
+          "duration_formatted": "425u 27m 17s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/028_27.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAyOF8yNy5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=LPMtTSOnkkvRdAGBcPBryUZGadv2O~xIIYB8j6QXcqjNdssK~BU7eZwtkgV6lp2K4VWamOsXN3dpmh8cxUDPzEWp6SScEK3OvAdvtIy0DtjcNHxFUnrHx~~SYGmKOFm3sp3ZOpvEY4ABFUkRxx2Qarh2TtW0gpg9wc3e6rVO-Dg_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/28_27.mp3"
+        },
+        {
+          "number": 29,
+          "title": "28",
+          "duration": 1291702,
+          "duration_formatted": "358u 48m 22s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/029_28.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAyOV8yOC5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=HuITp1ggv99HUSKI8U1VCUUo5xTmJ2rPmhwHYOThc6hw~YjFmbZ4bKEMgiwgIsS-6r0h0Q4DTIOSDVzJe5O1EY2OZk-xJkfd9dej6QvuqiMdbCTvOTe5cbZ6OkyjzdlaZ0XSeGwAj-B-WUJAk-qCenUjZa67VDSk5N06S9hbiug_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/29_28.mp3"
+        },
+        {
+          "number": 30,
+          "title": "29",
+          "duration": 475585,
+          "duration_formatted": "132u 6m 25s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/030_29.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAzMF8yOS5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=bUv3WHCgHsqXm-FvWGEvIHrAfnSOYmfn~cWWwnecRShhJIlUZpVGIq72end3mTomd5eMcMwEpYs3rKnCVAnZTgo4-nbvXxl8ffJAgSzB883zYo3kvqLCl-0evbOxHBlqe7TKwq~Ksb8tmaz00vCKHsglGZcQ8jLC38z8Fq2vANM_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/30_29.mp3"
+        },
+        {
+          "number": 31,
+          "title": "30",
+          "duration": 670693,
+          "duration_formatted": "186u 18m 13s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/031_30.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAzMV8zMC5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=H5HgjxbJiSB3vyQVuc9~C6kCgcscFKMtx1zzfDhRAh2WEj-3HhN~zJ7UVVAjGceaJjvn1UH0t9BPMPl~H854G6gbR7Nj~ARPyhMve54~oNffeBx7S-FnMwqXMxeEeIOE96ZslrS2dnFlz0fQkWIkB7K8~odreDPl3kiJTE9hIvg_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/31_30.mp3"
+        },
+        {
+          "number": 32,
+          "title": "31",
+          "duration": 1157799,
+          "duration_formatted": "321u 36m 39s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/032_31.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAzMl8zMS5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=Mos5FqJG7nB-i2IqUlLAKmSWpaqSjhUjK~q55ohLXeUE8~vHBKnHJ5Q5PuqiFsVJml0-Jvebw3RM0Vx0ZgMkLqmh8FPDmfcNRvL4ONuCHYe78qPZ6dV8N8z3Cn0EstSZwvTkinkoHypUd2xxHYoOmKDm6F9Fa9Js1bVnK2tzBeQ_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/32_31.mp3"
+        },
+        {
+          "number": 33,
+          "title": "32",
+          "duration": 1308708,
+          "duration_formatted": "363u 31m 48s",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr2676216/033_32.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHIyNjc2MjE2LzAzM18zMi5tcDMiLCJDb25kaXRpb24iOnsiRGF0ZUxlc3NUaGFuIjp7IkFXUzpFcG9jaFRpbWUiOjE3Njk0MzYyMjd9fX1dfQ__&Signature=MRzL6NS~~gNN~tSqJaAUXXqzASYfz3HW~jpbWptVbGfj-aom4mebzp1cDbpwSiNKHKLAgiRW2BUcKDuLncvHtBd5oavQD-Wt70BIeCcahcdPJw5U8fLbaL91yz9OtRHWMCG3SnjEWaorHrmdNLWAoRF1xgyIj0i5F0Q7TOhHeRg_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/Carry SleeJuf Braaksel en het geheimzinnige plan/33_32.mp3"
+        }
+      ],
+      "total_chapters": 33,
+      "error": null
+    },
+    {
+      "id": "45557488X",
+      "title": "DisneyDe Kleine Zeemeermin - Het verhaal van Arie͏̈l",
+      "url": "https://www.onlinebibliotheek.nl/catalogus/45557488X/de-kleine-zeemeermin---het-verhaal-van-arie--l-disney",
+      "image": "https://v2.leibniz.zbkb.nl/assets/id/PPN%3A45557488X?aid=kb-iblv&sid=19&dts=1767619616611&width=132&sig=3a7491dcc2e144b0ad00fc9a19af7da7e9e61fdb78a61a8aab2a035aff0d3259",
+      "state": "cc38ad61-e3b9-47cb-ae1c-fb83858f6b56",
+      "media_id": "692d0b473f050e331c3ce94e",
+      "key_id": "695bda862c11285a12833316",
+      "metadata": {
+        "cover": "https://covers.odilo.io/publicms/De_Kleine_Zeemeermin___Het_verhaal_van_Arie__l/9788727270883_ORIGINAL.jpg",
+        "title": "De Kleine Zeemeermin - Het verhaal van Arie͏̈l",
+        "author": "Disney",
+        "published": "Saga Kids 2025",
+        "description": "MB",
+        "duration": "00u 16m12",
+        "notes": null,
+        "synopsis": "Een magische wereld onder de zee! Keer terug naar de diepten van de oceaan met Arie͏̈l, de prinses van het zeemeerminnenrijk, in deze luisterboekversie van Disney's klassieke film. Arie͏̈l is de dochter van koning Triton en het is tijd voor haar om haar verantwoordelijkheden als prinses op zich te nemen. De jonge zeemeermin is echter avontuurlijk en gefascineerd door de wereld aan de oppervlakte... Op een dag wordt ze verliefd op een knappe menselijke prins en besluit ze alles te riskeren om hem te ontmoeten. Dit leidt ertoe dat ze een verschrikkelijke deal sluit met de heks Ursula: haar stem in ruil voor benen. Ontdek een verhaal over opoffering en vrijheid dat miljoenen kinderen over de hele wereld heeft gefascineerd! © Disney. Alle rechten voorbehouden. Laat je betoveren door het fantastische DISNEY-universum. Ga op avontuur en beleef de magie met je favoriete personages: Mickey, Minnie, Donald, Goofy, Aladdin, Dumbo, Bliksem McQueen, Anna, Elsa, Winnie de Poeh, Sneeuwwitje, De Leeuwenwacht, Woody, Buzz Lightyear, Moana en alle anderen. Leun achterover en luister mee - op naar de sterren en daar voorbij! Bron: Flaptekst, uitgeversinformatie.",
+        "performers": [
+          "Sanne Bosman"
+        ],
+        "previewUrl": "https://v2.leibniz.zbkb.nl/assets/id/PPN%3A45557488X?aid=kb-eld&sid=19&dts=1765843249696&sig=8fa6b041564e8394d6a2a52e51f38e6f66423312d01293ab0d89cd7fa2b6c601&type=preview&fileType=mp3"
+      },
+      "chapters": [
+        {
+          "number": 1,
+          "title": "001",
+          "duration": -1,
+          "duration_formatted": "N/A",
+          "format": "AUDIO",
+          "url": "https://d1ukfmmao1s9m3.cloudfront.net/dr9686577/001_001.mp3?Policy=eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vZDF1a2ZtbWFvMXM5bTMuY2xvdWRmcm9udC5uZXQvZHI5Njg2NTc3LzAwMV8wMDEubXAzIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzY5NDMxODA2fX19XX0_&Signature=D62KAe~Hov-GtoX6N4EJMyOMWhw0TC49Nvb~qKc7qI6m2Ue4WncZ9SIkjvbxu~1fMp8JcnKq2Frt9uJk8TBTmvwKLMtRWMiktSnS2bc67ggm3MVVKLqlAi8aO6DX9CCfls0yFM6tLP3VHixX0zpqp-cerIUsgwnjVM0UpFvKAew_&Key-Pair-Id=APKAIKX2OHEK7X2QLNZA",
+          "local_path": "/Users/emieljanson/GitHub/berry/bibliotheek/downloads/DisneyDe Kleine Zeemeermin - Het verhaal van Arie͏̈l/01_001.mp3"
+        }
+      ],
+      "total_chapters": 1,
+      "error": null
+    }
+  ]
+}
