@@ -40,7 +40,7 @@ class ImageCache:
         self._preloading = False
     
     def get_placeholder(self, size: int) -> pygame.Surface:
-        """Get a placeholder surface for missing images (rotated for portrait mode)."""
+        """Get a placeholder surface for missing images."""
         cache_key = f'_placeholder_{size}'
         if cache_key not in self.cache:
             placeholder = pygame.Surface((size, size), pygame.SRCALPHA)
@@ -48,8 +48,6 @@ class ImageCache:
             # Use native pygame.draw.rect with border_radius for cleaner corners
             pygame.draw.rect(placeholder, COLORS['bg_elevated'], 
                             (0, 0, size, size), border_radius=radius)
-            # Rotate for portrait mode (same as regular images)
-            placeholder = pygame.transform.rotate(placeholder, -90)
             self.cache[cache_key] = placeholder.convert_alpha()
         return self.cache[cache_key]
     
@@ -150,12 +148,9 @@ class ImageCache:
         return None
     
     def _load_surface(self, path: Path, cache_key: str) -> pygame.Surface:
-        """Load image directly with pygame and rotate for portrait display."""
+        """Load pre-rotated image directly with pygame (fast, no rotation needed)."""
         try:
             surface = pygame.image.load(str(path)).convert_alpha()
-            # Rotate 90° CW for portrait display mode
-            # User holds device with left side up, so images need to be pre-rotated
-            surface = pygame.transform.rotate(surface, -90)  # -90 = 90° CW
             self.cache[cache_key] = surface
             self._access_times[cache_key] = time.time()
             return surface

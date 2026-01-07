@@ -253,17 +253,20 @@ class CatalogManager:
         """Save all image variants (4 files) and return base local path.
         
         Generates 4 variants for fast runtime loading:
-        - {hash}.png          - 410px normal
-        - {hash}_small.png    - 307px normal  
-        - {hash}_dim.png      - 410px dimmed
-        - {hash}_small_dim.png - 307px dimmed
+        - {hash}.png          - 410px normal (pre-rotated 90° CW)
+        - {hash}_small.png    - 307px normal (pre-rotated 90° CW)
+        - {hash}_dim.png      - 410px dimmed (pre-rotated 90° CW)
+        - {hash}_small_dim.png - 307px dimmed (pre-rotated 90° CW)
         
-        Note: Images are rotated 90° CW when LOADED (in image_cache.py)
-        for portrait display mode, not when saved.
+        Images are pre-rotated for portrait display mode to avoid
+        runtime rotation overhead.
         """
         # Check if already exists
         if hash_short in self.image_hashes:
             return self.image_hashes[hash_short]
+        
+        # Rotate 90° CW for portrait display mode (done once at save time)
+        img = img.transpose(Image.Transpose.ROTATE_270)
         
         prefix = 'temp_' if temp else ''
         base_name = f'{prefix}{hash_short}'
