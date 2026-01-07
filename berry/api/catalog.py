@@ -257,6 +257,9 @@ class CatalogManager:
         - {hash}_small.png    - 307px normal  
         - {hash}_dim.png      - 410px dimmed
         - {hash}_small_dim.png - 307px dimmed
+        
+        Note: Images are rotated 90° CW when LOADED (in image_cache.py)
+        for portrait display mode, not when saved.
         """
         # Check if already exists
         if hash_short in self.image_hashes:

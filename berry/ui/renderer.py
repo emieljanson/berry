@@ -15,8 +15,8 @@ from ..models import CatalogItem, NowPlaying
 from ..config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, COLORS,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
-    TRACK_INFO_Y, CAROUSEL_Y, CONTROLS_Y,
-    BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING, PROGRESS_BAR_HEIGHT,
+    TRACK_INFO_X, CAROUSEL_X, CONTROLS_X, CAROUSEL_CENTER_Y,
+    BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING, PROGRESS_BAR_WIDTH,
     VOLUME_LEVELS,
 )
 
@@ -48,7 +48,8 @@ class Renderer:
         # Partial update state
         self._needs_full_redraw = True
         self._static_layer: Optional[pygame.Surface] = None
-        self._carousel_rect = pygame.Rect(0, CAROUSEL_Y - 50, SCREEN_WIDTH, COVER_SIZE + 100)
+        # Portrait mode: carousel spans Y axis (user's horizontal), X for vertical positioning
+        self._carousel_rect = pygame.Rect(CAROUSEL_X - 50, 0, COVER_SIZE + 100, SCREEN_HEIGHT)
         self._last_playing_state: Optional[bool] = None
         self._last_selected_index: Optional[int] = None
         
@@ -218,95 +219,115 @@ class Renderer:
             return []
     
     def _draw_background(self):
-        """Draw pre-rendered background with gradient."""
+        """Draw pre-rendered background with gradient (portrait mode)."""
         if not self._bg_cache:
             self._bg_cache = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
             self._bg_cache.fill(COLORS['bg_primary'])
-            # Pre-render gradient with purple accent tint
-            for y in range(150):
-                alpha = int(30 * (1 - y / 150))
+            # Portrait mode: gradient from right edge (user's top) along X axis
+            # X=720 is user's top, so gradient fades from X=720 towards X=570
+            for offset in range(150):
+                x = SCREEN_WIDTH - 1 - offset  # Start at right edge (user's top)
+                alpha = int(30 * (1 - offset / 150))
                 color = (
                     min(255, COLORS['bg_primary'][0] + int(alpha * 0.75)),
                     min(255, COLORS['bg_primary'][1] + int(alpha * 0.4)),
                     min(255, COLORS['bg_primary'][2] + alpha),
                 )
-                pygame.draw.line(self._bg_cache, color, (0, y), (SCREEN_WIDTH, y))
+                pygame.draw.line(self._bg_cache, color, (x, 0), (x, SCREEN_HEIGHT))
             self._bg_cache = self._bg_cache.convert()
         
         self.screen.blit(self._bg_cache, (0, 0))
     
+    def _render_text_rotated(self, text: str, font: pygame.font.Font, color: tuple) -> pygame.Surface:
+        """Render text rotated 90° CW for portrait display mode."""
+        text_surface = font.render(text, True, color)
+        return pygame.transform.rotate(text_surface, -90)  # -90 = 90° CW
+    
     def _draw_disconnected(self):
-        """Draw disconnected state."""
-        text = self.font_large.render('Connecting to Berry...', True, COLORS['text_secondary'])
+        """Draw disconnected state (portrait mode)."""
+        text = self._render_text_rotated('Connecting to Berry...', self.font_large, COLORS['text_secondary'])
+        # Portrait center: X=360 (vertical center), Y=640 (horizontal center)
         rect = text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
         self.screen.blit(text, rect)
     
     def _draw_setup_screen(self):
-        """Draw Spotify setup instructions for first-time users."""
-        center_x = SCREEN_WIDTH // 2
-        center_y = SCREEN_HEIGHT // 2
+        """Draw Spotify setup instructions for first-time users (portrait mode)."""
+        # Portrait: X is user's vertical (720 total), Y is user's horizontal (1280 total)
+        center_x = SCREEN_WIDTH // 2   # 360 - vertical center
+        center_y = SCREEN_HEIGHT // 2  # 640 - horizontal center
         
-        # Title
-        title = self.font_large.render('Welkom bij Berry', True, COLORS['text_primary'])
-        title_rect = title.get_rect(center=(center_x, center_y - 120))
+        # Title (rotated text, positioned at user's top)
+        title = self._render_text_rotated('Welkom bij Berry', self.font_large, COLORS['text_primary'])
+        # User's top = high X value. Offset from center along X.
+        title_rect = title.get_rect(center=(center_x + 120, center_y))
         self.screen.blit(title, title_rect)
         
         # Spotify icon (using accent color circle as placeholder)
-        icon_y = center_y - 30
-        pygame.draw.circle(self.screen, COLORS['accent'], (center_x, icon_y), 40)
+        # Position slightly below title in user's view = slightly lower X
+        icon_x = center_x + 30
+        pygame.draw.circle(self.screen, COLORS['accent'], (icon_x, center_y), 40)
         
-        # Music note symbol
-        note = self.font_large.render('♪', True, COLORS['text_primary'])
-        note_rect = note.get_rect(center=(center_x, icon_y))
+        # Music note symbol (rotated)
+        note = self._render_text_rotated('♪', self.font_large, COLORS['text_primary'])
+        note_rect = note.get_rect(center=(icon_x, center_y))
         self.screen.blit(note, note_rect)
         
-        # Instructions
+        # Instructions (each on separate line in user's view = spaced along Y)
         instructions = [
             "Open Spotify op je telefoon",
             "Tik op het speaker icoon",
             "Kies 'Berry'",
         ]
         
-        y_start = center_y + 60
+        # Start position: below icon in user's view = lower X value
+        x_pos = center_x - 60
+        y_start = center_y - 200  # Start from user's left side
+        
         for i, line in enumerate(instructions):
+            y_pos = y_start + i * 150  # Space along Y (user's horizontal)
+            
             # Step number
             step_text = f"{i + 1}."
-            step = self.font_medium.render(step_text, True, COLORS['accent'])
-            step_rect = step.get_rect(midright=(center_x - 150, y_start + i * 45))
+            step = self._render_text_rotated(step_text, self.font_medium, COLORS['accent'])
+            step_rect = step.get_rect(center=(x_pos + 30, y_pos))
             self.screen.blit(step, step_rect)
             
             # Instruction text
-            text = self.font_medium.render(line, True, COLORS['text_secondary'])
-            text_rect = text.get_rect(midleft=(center_x - 140, y_start + i * 45))
+            text = self._render_text_rotated(line, self.font_medium, COLORS['text_secondary'])
+            text_rect = text.get_rect(center=(x_pos - 10, y_pos))
             self.screen.blit(text, text_rect)
         
-        # Waiting indicator
-        waiting = self.font_small.render('Wachten op verbinding...', True, COLORS['text_muted'])
-        waiting_rect = waiting.get_rect(center=(center_x, SCREEN_HEIGHT - 60))
+        # Waiting indicator (at user's bottom = low X value)
+        waiting = self._render_text_rotated('Wachten op verbinding...', self.font_small, COLORS['text_muted'])
+        waiting_rect = waiting.get_rect(center=(60, center_y))
         self.screen.blit(waiting, waiting_rect)
     
     def _draw_empty_state(self):
-        """Draw empty catalog state."""
-        # Draw plus icon
+        """Draw empty catalog state (portrait mode)."""
+        center_x = SCREEN_WIDTH // 2   # 360
+        center_y = SCREEN_HEIGHT // 2  # 640
+        
+        # Draw plus icon (already rotated when loaded)
         icon = self.icons.get('plus')
         if icon:
             icon_size = 64
             scaled_icon = pygame.transform.smoothscale(icon, (icon_size, icon_size))
             tinted = scaled_icon.copy()
             tinted.fill(COLORS['accent'], special_flags=pygame.BLEND_RGB_MULT)
-            icon_rect = tinted.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 40))
+            # Position above center in user's view = higher X
+            icon_rect = tinted.get_rect(center=(center_x + 40, center_y))
             self.screen.blit(tinted, icon_rect)
         
-        title = self.font_large.render('No music yet', True, COLORS['text_primary'])
-        title_rect = title.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 30))
+        title = self._render_text_rotated('No music yet', self.font_large, COLORS['text_primary'])
+        title_rect = title.get_rect(center=(center_x - 30, center_y))
         self.screen.blit(title, title_rect)
         
-        sub = self.font_medium.render('Play music via Spotify and tap + to add', True, COLORS['text_secondary'])
-        sub_rect = sub.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 70))
+        sub = self._render_text_rotated('Play music via Spotify and tap + to add', self.font_medium, COLORS['text_secondary'])
+        sub_rect = sub.get_rect(center=(center_x - 70, center_y))
         self.screen.blit(sub, sub_rect)
     
     def _draw_track_info(self, item: Optional[CatalogItem], now_playing: NowPlaying):
-        """Draw track name and artist."""
+        """Draw track name and artist (portrait mode - at user's top)."""
         if not item:
             return
         
@@ -326,22 +347,28 @@ class Renderer:
         if track_key != self._last_track_key:
             self._last_track_key = track_key
             
-            max_width = SCREEN_WIDTH - 100
+            # Portrait mode: max_width is along Y axis (user's horizontal)
+            max_width = SCREEN_HEIGHT - 100
             display_name = name
             
+            # First render unrotated to check width
             name_surface = self.font_large.render(display_name, True, COLORS['text_primary'])
             if name_surface.get_width() > max_width:
                 while name_surface.get_width() > max_width - 30 and len(display_name) > 3:
                     display_name = display_name[:-1]
                 name_surface = self.font_large.render(display_name + '...', True, COLORS['text_primary'])
             
+            # Now rotate for portrait display
+            name_surface = pygame.transform.rotate(name_surface, -90)
             self._text_cache['name_surface'] = name_surface
-            self._text_cache['name_rect'] = name_surface.get_rect(center=(SCREEN_WIDTH // 2, TRACK_INFO_Y))
+            # Position: X=TRACK_INFO_X (user's top), Y centered
+            self._text_cache['name_rect'] = name_surface.get_rect(center=(TRACK_INFO_X, CAROUSEL_CENTER_Y))
             
             if artist:
-                artist_surface = self.font_medium.render(artist, True, COLORS['text_secondary'])
+                artist_surface = self._render_text_rotated(artist, self.font_medium, COLORS['text_secondary'])
                 self._text_cache['artist_surface'] = artist_surface
-                self._text_cache['artist_rect'] = artist_surface.get_rect(center=(SCREEN_WIDTH // 2, TRACK_INFO_Y + 35))
+                # Artist below title in user's view = lower X value
+                self._text_cache['artist_rect'] = artist_surface.get_rect(center=(TRACK_INFO_X - 35, CAROUSEL_CENTER_Y))
             else:
                 self._text_cache['artist_surface'] = None
         
@@ -351,9 +378,10 @@ class Renderer:
     
     def _draw_carousel(self, items: List[CatalogItem], scroll_x: float, 
                        now_playing: NowPlaying, delete_mode_id: Optional[str], loading: bool = False):
-        """Draw album cover carousel."""
-        center_x = SCREEN_WIDTH // 2
-        y = CAROUSEL_Y
+        """Draw album cover carousel (portrait mode - covers along Y axis)."""
+        # Portrait mode: covers laid out along Y axis (user's horizontal)
+        center_y = CAROUSEL_CENTER_Y  # 640
+        x = CAROUSEL_X  # Vertical position for covers
         
         max_index = max(0, len(items) - 1)
         scroll_x = max(0, min(scroll_x, max_index))
@@ -368,15 +396,17 @@ class Renderer:
         for i in range(start_i, end_i):
             item = items[i]
             offset = i - scroll_x
-            x = center_x + offset * (COVER_SIZE + COVER_SPACING)
+            # Y position based on scroll (along user's horizontal)
+            y = center_y + offset * (COVER_SIZE + COVER_SPACING)
             
             is_center = abs(offset) < 0.5
             size = COVER_SIZE if is_center else COVER_SIZE_SMALL
             
-            draw_x = int(x - size // 2)
-            draw_y = y + (COVER_SIZE - size) // 2
+            draw_y = int(y - size // 2)
+            # X position: center vertically, with smaller covers slightly offset
+            draw_x = x + (COVER_SIZE - size) // 2
             
-            if draw_x + size < 0 or draw_x > SCREEN_WIDTH:
+            if draw_y + size < 0 or draw_y > SCREEN_HEIGHT:
                 continue
             
             # All items (albums and playlists) use single image field
@@ -407,7 +437,7 @@ class Renderer:
                 self._draw_delete_button(center_cover_rect)
     
     def _draw_cover_progress(self, cover_rect: tuple, item: CatalogItem, now_playing: NowPlaying):
-        """Draw progress bar at the bottom edge of the cover."""
+        """Draw progress bar at the edge of the cover (portrait mode - left edge = user's bottom)."""
         cover_x, cover_y, cover_w, cover_h = cover_rect
         
         if now_playing.context_uri != item.uri:
@@ -417,10 +447,11 @@ class Renderer:
         if progress <= 0:
             return
         
-        bar_height = PROGRESS_BAR_HEIGHT
-        fill_width = int(cover_w * min(progress, 1.0))
+        # Portrait mode: progress bar on left edge of cover (user sees as bottom)
+        bar_width = PROGRESS_BAR_WIDTH
+        fill_height = int(cover_h * min(progress, 1.0))
         
-        if fill_width <= 0:
+        if fill_height <= 0:
             return
         
         # Cache progress bar mask
@@ -439,8 +470,10 @@ class Renderer:
         progress_surf = self._progress_cache[surf_key]
         progress_surf.fill((0, 0, 0, 0))
         
+        # Progress bar on left edge (user's bottom), growing from top to bottom
+        # User sees this as progress from left to right
         pygame.draw.rect(progress_surf, COLORS['accent'],
-                        (0, cover_h - bar_height, fill_width, bar_height))
+                        (0, 0, bar_width, fill_height))
         
         progress_surf.blit(self._progress_cache[mask_key], (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
         self.screen.blit(progress_surf, (cover_x, cover_y))
@@ -455,36 +488,37 @@ class Renderer:
         )
     
     def _draw_controls(self, is_playing: bool, volume_index: int, pressed_button: Optional[str] = None):
-        """Draw playback control buttons with optional pressed state feedback."""
-        center_x = SCREEN_WIDTH // 2
-        y = CONTROLS_Y
+        """Draw playback control buttons (portrait mode - buttons along Y axis)."""
+        # Portrait mode: buttons laid out along Y axis (user's horizontal)
+        x = CONTROLS_X  # Position along physical X (user's vertical = bottom)
+        center_y = CAROUSEL_CENTER_Y  # 640
         btn_spacing = BTN_SPACING
         
         # Base colors
         gray_color = COLORS['bg_elevated']
         play_color = COLORS['accent']
         
-        # Prev button (gray -> lighter gray when pressed)
-        prev_center = (center_x - btn_spacing, y)
+        # Prev button (left of play button in user's view = lower Y)
+        prev_center = (x, center_y - btn_spacing)
         prev_color = self._lighten_color(gray_color) if pressed_button == 'prev' else gray_color
         draw_aa_circle(self.screen, prev_color, prev_center, BTN_SIZE // 2)
         self._draw_icon('prev', prev_center)
         
-        # Play/Pause button (purple -> lighter purple when pressed)
-        play_center = (center_x, y)
+        # Play/Pause button (center)
+        play_center = (x, center_y)
         play_btn_color = self._lighten_color(play_color) if pressed_button == 'play' else play_color
         draw_aa_circle(self.screen, play_btn_color, play_center, PLAY_BTN_SIZE // 2)
         self._draw_icon('pause' if is_playing else 'play', play_center)
         
-        # Next button (gray -> lighter gray when pressed)
-        next_center = (center_x + btn_spacing, y)
+        # Next button (right of play button in user's view = higher Y)
+        next_center = (x, center_y + btn_spacing)
         next_color = self._lighten_color(gray_color) if pressed_button == 'next' else gray_color
         draw_aa_circle(self.screen, next_color, next_center, BTN_SIZE // 2)
         self._draw_icon('next', next_center)
         
-        # Volume button (gray -> lighter gray when pressed)
-        right_cover_edge = center_x + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
-        vol_center = (right_cover_edge - BTN_SIZE // 2, y)
+        # Volume button (far right in user's view = highest Y)
+        right_cover_edge = center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
+        vol_center = (x, right_cover_edge - BTN_SIZE // 2)
         vol_color = self._lighten_color(gray_color) if pressed_button == 'volume' else gray_color
         draw_aa_circle(self.screen, vol_color, vol_center, BTN_SIZE // 2)
         icon_key = VOLUME_LEVELS[volume_index]['icon']
@@ -498,13 +532,15 @@ class Renderer:
             self.screen.blit(icon, rect)
     
     def _draw_add_button(self, cover_rect: tuple):
-        """Draw + button on cover for temp items."""
+        """Draw + button on cover for temp items (portrait mode)."""
         cover_x, cover_y, cover_w, cover_h = cover_rect
         
         btn_size = 100
         icon_size = 72
         margin = 16
-        btn_x = cover_x + cover_w - btn_size - margin
+        # Portrait mode: button at bottom-right of cover (user sees as top-right)
+        # Physical: low X, high Y
+        btn_x = cover_x + margin
         btn_y = cover_y + cover_h - btn_size - margin
         center = (btn_x + btn_size // 2, btn_y + btn_size // 2)
         
@@ -519,13 +555,14 @@ class Renderer:
         self.add_button_rect = (btn_x, btn_y, btn_size, btn_size)
     
     def _draw_delete_button(self, cover_rect: tuple):
-        """Draw - button on cover for delete mode."""
+        """Draw - button on cover for delete mode (portrait mode)."""
         cover_x, cover_y, cover_w, cover_h = cover_rect
         
         btn_size = 100
         icon_size = 72
         margin = 16
-        btn_x = cover_x + cover_w - btn_size - margin
+        # Portrait mode: button at bottom-right of cover (user sees as top-right)
+        btn_x = cover_x + margin
         btn_y = cover_y + cover_h - btn_size - margin
         center = (btn_x + btn_size // 2, btn_y + btn_size // 2)
         

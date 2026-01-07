@@ -19,7 +19,7 @@ from .config import (
     CATALOG_PATH, IMAGES_DIR, ICONS_DIR,
     MOCK_MODE, VOLUME_LEVELS, PROFILE_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
-    CAROUSEL_Y, CONTROLS_Y, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
+    CAROUSEL_X, CAROUSEL_CENTER_Y, CONTROLS_X, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
     PROGRESS_SAVE_INTERVAL,
     has_spotify_credentials,
 )
@@ -250,7 +250,7 @@ class Berry:
         self._update_carousel_max_index()
     
     def _load_icons(self) -> dict:
-        """Load icon images."""
+        """Load icon images and rotate for portrait display mode."""
         icons = {}
         icon_files = {
             'play': 'play-fill.png',
@@ -265,7 +265,9 @@ class Berry:
         }
         for name, filename in icon_files.items():
             try:
-                icons[name] = pygame.image.load(ICONS_DIR / filename).convert_alpha()
+                icon = pygame.image.load(ICONS_DIR / filename).convert_alpha()
+                # Rotate 90° CW for portrait display mode
+                icons[name] = pygame.transform.rotate(icon, -90)
             except Exception as e:
                 logger.warning(f'Failed to load icon {filename}: {e}', exc_info=True)
         return icons
@@ -318,7 +320,7 @@ class Berry:
         # Warn if software rendering
         if not gpu_accelerated:
             logger.warning('=' * 60)
-            logger.warning('⚠️  SOFTWARE RENDERING - Animations will be slow!')
+            logger.warning('SOFTWARE RENDERING - Animations will be slow!')
             logger.warning('=' * 60)
         
         # Check for Raspberry Pi
@@ -760,12 +762,14 @@ class Berry:
             self.renderer.invalidate()
         
         # Handle control buttons (just show pressed state, action on release)
-        if CONTROLS_Y - PLAY_BTN_SIZE <= y <= CONTROLS_Y + PLAY_BTN_SIZE:
+        # Portrait mode: x is user's vertical, check if touch is in controls area
+        if CONTROLS_X - PLAY_BTN_SIZE <= x <= CONTROLS_X + PLAY_BTN_SIZE:
             self._handle_button_down(pos)
             return
         
         # Handle carousel swipes
-        if CAROUSEL_Y <= y <= CAROUSEL_Y + COVER_SIZE + 50:
+        # Portrait mode: carousel is in the middle X band
+        if CAROUSEL_X <= x <= CAROUSEL_X + COVER_SIZE + 50:
             self.touch.on_down(pos)
             self.user_interacting = True
             self.play_timer.cancel()
@@ -805,10 +809,12 @@ class Berry:
         self.carousel.scroll_x = visual_position
         
         x, y = pos
-        center_x = SCREEN_WIDTH // 2
+        # Portrait mode: carousel along Y axis (user's horizontal)
+        center_y = CAROUSEL_CENTER_Y
         
         if action in ('left', 'right'):
             # Calculate target based on position + velocity
+            # Note: 'left'/'right' from touch handler = swipe along Y axis in portrait
             abs_vel = abs(velocity)
             # Higher thresholds = less sensitive (need faster swipe for bonus)
             velocity_bonus = 0 if abs_vel < 1.5 else (1 if abs_vel < 2.5 else (2 if abs_vel < 4.0 else 3))
@@ -827,9 +833,10 @@ class Berry:
                 logger.debug('Carousel tap debounced')
                 return
             
-            if x < center_x - 100:
+            # Portrait mode: check Y position (user's horizontal)
+            if y < center_y - 100:
                 self._navigate(-1)
-            elif x > center_x + 100:
+            elif y > center_y + 100:
                 self._navigate(1)
             elif self.connected or self.mock_mode:
                 # Only toggle play if connected
@@ -848,20 +855,21 @@ class Berry:
     def _handle_button_down(self, pos):
         """Handle button press down - show pressed state only, action on release."""
         x, y = pos
-        center_x = SCREEN_WIDTH // 2
+        # Portrait mode: buttons laid out along Y axis (user's horizontal)
+        center_y = CAROUSEL_CENTER_Y
         btn_spacing = BTN_SPACING
         
-        right_cover_edge = center_x + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
-        vol_x = right_cover_edge - BTN_SIZE // 2
+        right_cover_edge = center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
+        vol_y = right_cover_edge - BTN_SIZE // 2
         
         button = None
-        if center_x - btn_spacing - BTN_SIZE <= x <= center_x - btn_spacing + BTN_SIZE:
+        if center_y - btn_spacing - BTN_SIZE <= y <= center_y - btn_spacing + BTN_SIZE:
             button = 'prev'
-        elif center_x - PLAY_BTN_SIZE <= x <= center_x + PLAY_BTN_SIZE:
+        elif center_y - PLAY_BTN_SIZE <= y <= center_y + PLAY_BTN_SIZE:
             button = 'play'
-        elif center_x + btn_spacing - BTN_SIZE <= x <= center_x + btn_spacing + BTN_SIZE:
+        elif center_y + btn_spacing - BTN_SIZE <= y <= center_y + btn_spacing + BTN_SIZE:
             button = 'next'
-        elif vol_x - BTN_SIZE <= x <= vol_x + BTN_SIZE:
+        elif vol_y - BTN_SIZE <= y <= vol_y + BTN_SIZE:
             button = 'volume'
         
         if button:
@@ -895,21 +903,24 @@ class Berry:
             return
         
         x, y = pos
-        center_x = SCREEN_WIDTH // 2
+        # Portrait mode: buttons laid out along Y axis (user's horizontal)
+        center_y = CAROUSEL_CENTER_Y
         btn_spacing = BTN_SPACING
-        right_cover_edge = center_x + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
-        vol_x = right_cover_edge - BTN_SIZE // 2
+        # Volume button position along Y axis
+        right_cover_edge = center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
+        vol_y = right_cover_edge - BTN_SIZE // 2
         
         # Check which button the release is on
+        # Portrait mode: x is user's vertical, y is user's horizontal
         released_on = None
-        if CONTROLS_Y - PLAY_BTN_SIZE <= y <= CONTROLS_Y + PLAY_BTN_SIZE:
-            if center_x - btn_spacing - BTN_SIZE <= x <= center_x - btn_spacing + BTN_SIZE:
+        if CONTROLS_X - PLAY_BTN_SIZE <= x <= CONTROLS_X + PLAY_BTN_SIZE:
+            if center_y - btn_spacing - BTN_SIZE <= y <= center_y - btn_spacing + BTN_SIZE:
                 released_on = 'prev'
-            elif center_x - PLAY_BTN_SIZE <= x <= center_x + PLAY_BTN_SIZE:
+            elif center_y - PLAY_BTN_SIZE <= y <= center_y + PLAY_BTN_SIZE:
                 released_on = 'play'
-            elif center_x + btn_spacing - BTN_SIZE <= x <= center_x + btn_spacing + BTN_SIZE:
+            elif center_y + btn_spacing - BTN_SIZE <= y <= center_y + btn_spacing + BTN_SIZE:
                 released_on = 'next'
-            elif vol_x - BTN_SIZE <= x <= vol_x + BTN_SIZE:
+            elif vol_y - BTN_SIZE <= y <= vol_y + BTN_SIZE:
                 released_on = 'volume'
         
         # Execute action only if released on the same button that was pressed
