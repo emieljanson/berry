@@ -1,8 +1,13 @@
 """
 Image Cache - Loads and caches album cover images.
 
-Images are stored on disk with rounded corners already applied.
-This cache just loads, resizes, and caches pygame surfaces.
+Images are stored on disk in 4 pre-scaled variants:
+- {hash}.png           - 410px normal
+- {hash}_small.png     - 307px normal
+- {hash}_dim.png       - 410px dimmed
+- {hash}_small_dim.png - 307px dimmed
+
+This eliminates runtime PIL resizing/alpha compositing for much better FPS.
 """
 import time
 import logging
@@ -11,7 +16,6 @@ from pathlib import Path
 from typing import Optional, List, Dict
 
 import pygame
-from PIL import Image
 
 from ..config import COLORS, COVER_SIZE, COVER_SIZE_SMALL, IMAGE_CACHE_MAX_SIZE
 
@@ -19,10 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 class ImageCache:
-    """Loads and caches pre-processed album cover images.
+    """Loads and caches pre-scaled album cover images.
     
-    Images are stored on disk with rounded corners already applied by catalog.py.
-    This cache just loads, resizes, and maintains a pygame surface cache.
+    All image variants are pre-generated at download time by catalog.py.
+    This cache just loads the right variant with pygame (fast!) and maintains
+    a surface cache for even faster subsequent access.
     """
     
     def __init__(self, images_dir: Path):
@@ -108,11 +113,65 @@ class ImageCache:
             
             logger.debug(f'Evicted {len(keys_to_remove)} LRU cached images')
     
-    def get(self, image_path: Optional[str], size: int = COVER_SIZE) -> pygame.Surface:
-        """Get an image surface, loading from disk if needed.
+    def _get_variant_path(self, image_path: str, size: int, dimmed: bool = False) -> Path:
+        """Get the path to the correct image variant.
         
-        Images are stored with rounded corners pre-applied, so we just
-        load and resize (corners scale proportionally).
+        Handles both new format (hash.png) and old format (timestamp-hash.png).
+        """
+        if not image_path.startswith('/images/'):
+            return None
+        
+        filename = image_path.replace('/images/', '')
+        base = filename.replace('.png', '').replace('.jpg', '')
+        
+        # Determine suffix based on size and dimmed
+        if size == COVER_SIZE_SMALL:
+            suffix = '_small_dim' if dimmed else '_small'
+        else:
+            suffix = '_dim' if dimmed else ''
+        
+        # Try new format first: {hash}{suffix}.png
+        variant_filename = f'{base}{suffix}.png'
+        variant_path = self.images_dir / variant_filename
+        
+        if variant_path.exists():
+            return variant_path
+        
+        # Fall back to original file for old format images (will be slower)
+        # This handles images not yet migrated
+        original_path = self.images_dir / filename
+        if original_path.exists():
+            logger.debug(f'Variant {variant_filename} not found, using original: {filename}')
+            return original_path
+        
+        logger.warning(f'Image not found: {variant_filename} (base={base}, size={size}, dimmed={dimmed})')
+        return None
+    
+    def _load_surface(self, path: Path, cache_key: str) -> pygame.Surface:
+        """Load image directly with pygame (fast - no PIL resize needed)."""
+        try:
+            surface = pygame.image.load(str(path)).convert_alpha()
+            self.cache[cache_key] = surface
+            self._access_times[cache_key] = time.time()
+            return surface
+        except Exception as e:
+            logger.debug(f'Failed to load {path}: {e}')
+            # Extract size from cache_key for placeholder
+            # cache_key format: "{path}_{size}" or "{path}_{size}_dimmed"
+            try:
+                parts = cache_key.rsplit('_', 2)
+                if 'dimmed' in parts[-1]:
+                    size = int(parts[-2])
+                else:
+                    size = int(parts[-1])
+            except (ValueError, IndexError):
+                size = COVER_SIZE
+            return self.get_placeholder(size)
+    
+    def get(self, image_path: Optional[str], size: int = COVER_SIZE) -> pygame.Surface:
+        """Get an image surface, loading the correct pre-scaled variant.
+        
+        No PIL resize needed - variants are pre-generated at download time.
         """
         if not image_path:
             return self.get_placeholder(size)
@@ -127,20 +186,19 @@ class ImageCache:
         # Evict old entries if cache is getting too large
         self._evict_if_needed()
         
-        # Load from local file (images are pre-processed with corners)
-        if image_path.startswith('/images/'):
-            local_path = self.images_dir / image_path.replace('/images/', '')
-            if local_path.exists():
-                return self._load_local(local_path, size, cache_key)
+        # Get path to correct variant
+        variant_path = self._get_variant_path(image_path, size, dimmed=False)
         
-        # URL images are handled by catalog during download
-        # Show placeholder if not yet available
+        if variant_path:
+            return self._load_surface(variant_path, cache_key)
+        
+        # URL images or missing files
         return self.get_placeholder(size)
     
     def get_dimmed(self, image_path: Optional[str], size: int = COVER_SIZE) -> pygame.Surface:
-        """Get a pre-cached dimmed version of the image (for non-selected items).
+        """Get a pre-dimmed image variant (for non-selected items).
         
-        Uses PIL alpha_composite to properly preserve transparent corners.
+        No PIL alpha composite needed - dimmed variants are pre-generated.
         """
         if not image_path:
             return self.get_placeholder(size)
@@ -151,53 +209,13 @@ class ImageCache:
             self._access_times[cache_key] = time.time()
             return self.cache[cache_key]
         
-        # Load image as PIL for proper alpha compositing
-        img = self._load_pil(image_path, size)
-        if img is None:
-            return self.get_placeholder(size)
+        # Evict old entries if cache is getting too large
+        self._evict_if_needed()
         
-        # Apply dimming with alpha composite (preserves transparent corners)
-        overlay = Image.new('RGBA', (size, size), (0, 0, 0, 115))
-        img = Image.alpha_composite(img, overlay)
+        # Get path to dimmed variant
+        variant_path = self._get_variant_path(image_path, size, dimmed=True)
         
-        # Convert to pygame surface
-        surface = pygame.image.fromstring(img.tobytes(), img.size, 'RGBA')
-        surface = surface.convert_alpha()
-        self.cache[cache_key] = surface
-        self._access_times[cache_key] = time.time()
-        return surface
-    
-    def _load_pil(self, image_path: str, size: int) -> Optional[Image.Image]:
-        """Load image as PIL Image for processing (e.g., dimming)."""
-        if not image_path or not image_path.startswith('/images/'):
-            return None
+        if variant_path:
+            return self._load_surface(variant_path, cache_key)
         
-        local_path = self.images_dir / image_path.replace('/images/', '')
-        if not local_path.exists():
-            return None
-        
-        try:
-            img = Image.open(local_path).convert('RGBA')
-            if img.size[0] != size:
-                img = img.resize((size, size), Image.Resampling.LANCZOS)
-            return img
-        except Exception:
-            return None
-    
-    def _load_local(self, path: Path, size: int, cache_key: str) -> pygame.Surface:
-        """Load pre-processed image from local file.
-        
-        Images already have rounded corners applied, so we just resize if needed.
-        """
-        try:
-            img = Image.open(path).convert('RGBA')
-            if img.size[0] != size:
-                img = img.resize((size, size), Image.Resampling.LANCZOS)
-            surface = pygame.image.fromstring(img.tobytes(), img.size, 'RGBA')
-            surface = surface.convert_alpha()
-            self.cache[cache_key] = surface
-            self._access_times[cache_key] = time.time()
-            return surface
-        except Exception:
-            return self.get_placeholder(size)
-
+        return self.get_placeholder(size)

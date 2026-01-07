@@ -43,6 +43,7 @@ LOG_BACKUP_COUNT = 10  # Keep 10 backup files (~50MB total)
 
 MOCK_MODE = '--mock' in sys.argv or '-m' in sys.argv
 FULLSCREEN = '--fullscreen' in sys.argv or '-f' in sys.argv
+PROFILE_MODE = '--profile' in sys.argv or os.environ.get('BERRY_PROFILE') == '1'
 
 # ============================================
 # COLORS (Design specs from web version)
@@ -80,7 +81,6 @@ BTN_SIZE = 100
 PLAY_BTN_SIZE = 120
 
 # Button spacing: align prev/next buttons with cover edges
-# (button edge aligned with cover edge)
 BTN_SPACING = (COVER_SIZE - BTN_SIZE) // 2  # 155px
 
 # Progress bar

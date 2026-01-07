@@ -11,6 +11,7 @@ import json
 import time
 import hashlib
 import logging
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -20,7 +21,7 @@ import requests
 from PIL import Image, ImageDraw
 
 from ..models import CatalogItem
-from ..config import PROGRESS_EXPIRY_HOURS, COVER_SIZE
+from ..config import PROGRESS_EXPIRY_HOURS, COVER_SIZE, COVER_SIZE_SMALL
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,12 @@ def apply_rounded_corners_pil(img: Image.Image, radius: int) -> Image.Image:
     return result
 
 
+def apply_dimming(img: Image.Image, alpha: int = 115) -> Image.Image:
+    """Apply dark overlay to image (45% dimming by default)."""
+    overlay = Image.new('RGBA', img.size, (0, 0, 0, alpha))
+    return Image.alpha_composite(img, overlay)
+
+
 class CatalogManager:
     """
     Unified catalog manager for albums and playlists.
@@ -47,6 +54,9 @@ class CatalogManager:
         self.catalog_path = catalog_path
         self.images_path = images_path
         self.mock_mode = mock_mode
+        
+        # Thread lock for catalog file operations
+        self._catalog_lock = threading.Lock()
         
         # Ensure images directory exists
         self.images_path.mkdir(parents=True, exist_ok=True)
@@ -118,24 +128,26 @@ class CatalogManager:
         return self._items
     
     def _load_raw(self) -> dict:
-        """Load raw catalog.json."""
-        try:
-            if self.catalog_path.exists():
-                return json.loads(self.catalog_path.read_text())
-            return {'items': []}
-        except json.JSONDecodeError as e:
-            logger.warning(f'Invalid JSON in catalog: {e}')
-            return {'items': []}
-        except (IOError, OSError) as e:
-            logger.error(f'Cannot read catalog file: {e}', exc_info=True)
-            return {'items': []}
-        except Exception as e:
-            logger.error(f'Unexpected error loading catalog: {e}', exc_info=True)
-            return {'items': []}
+        """Load raw catalog.json (thread-safe)."""
+        with self._catalog_lock:
+            try:
+                if self.catalog_path.exists():
+                    return json.loads(self.catalog_path.read_text())
+                return {'items': []}
+            except json.JSONDecodeError as e:
+                logger.warning(f'Invalid JSON in catalog: {e}')
+                return {'items': []}
+            except (IOError, OSError) as e:
+                logger.error(f'Cannot read catalog file: {e}', exc_info=True)
+                return {'items': []}
+            except Exception as e:
+                logger.error(f'Unexpected error loading catalog: {e}', exc_info=True)
+                return {'items': []}
     
     def _save_raw(self, catalog: dict):
-        """Save raw catalog.json."""
-        self.catalog_path.write_text(json.dumps(catalog, indent=2))
+        """Save raw catalog.json (thread-safe)."""
+        with self._catalog_lock:
+            self.catalog_path.write_text(json.dumps(catalog, indent=2))
     
     def _load_mock_data(self) -> List[CatalogItem]:
         """Load mock data for UI testing."""
@@ -178,17 +190,42 @@ class CatalogManager:
     # ============================================
     
     def _index_existing_images(self):
-        """Index existing images by extracting hash from filename."""
+        """Index existing images by extracting hash from filename.
+        
+        Handles both old format (timestamp-hash.png) and new format (hash.png).
+        Only indexes the main variant (not _small, _dim variants).
+        """
         try:
             for file in self.images_path.iterdir():
                 if file.suffix not in ('.jpg', '.png'):
                     continue
-                # Extract hash from filename: "1767089701460-6aa1f146.png" -> "6aa1f146"
-                match = file.name.split('-')
-                if len(match) >= 2:
-                    hash_part = match[-1].replace('.jpg', '').replace('.png', '')
-                    if len(hash_part) == 8:  # Valid 8-char hash
-                        self.image_hashes[hash_part] = f'/images/{file.name}'
+                
+                # Skip variant files (only index main files)
+                if '_small' in file.name or '_dim' in file.name:
+                    continue
+                
+                # Extract hash from filename
+                # New format: "abc12345.png" or "abc12345_composite.png"
+                # Old format: "1767089701460-6aa1f146.png"
+                name = file.stem  # Without extension
+                
+                # Handle composite images
+                if '_composite' in name:
+                    # abc12345_composite -> abc12345
+                    hash_part = name.replace('_composite', '')
+                elif '-' in name:
+                    # Old format: timestamp-hash -> hash
+                    hash_part = name.split('-')[-1]
+                else:
+                    # New format: hash directly
+                    hash_part = name
+                
+                # Remove temp_ prefix if present
+                if hash_part.startswith('temp_'):
+                    hash_part = hash_part[5:]
+                
+                if len(hash_part) == 8:  # Valid 8-char hash
+                    self.image_hashes[hash_part] = f'/images/{file.name}'
             
             logger.info(f'Indexed {len(self.image_hashes)} images')
         except (IOError, OSError) as e:
@@ -197,36 +234,63 @@ class CatalogManager:
             logger.warning(f'Unexpected error indexing images: {e}', exc_info=True)
     
     def _download_and_hash_image(self, image_url: str) -> tuple:
-        """Download image and return (hash, PIL Image)."""
+        """Download image and return (hash, PIL Image).
+        
+        Returns the raw RGBA image without resizing - variants are generated at save time.
+        """
         response = requests.get(image_url, timeout=10)
         response.raise_for_status()
         buffer = response.content
         hash_full = hashlib.md5(buffer).hexdigest()
         hash_short = hash_full[:8]  # Use first 8 chars like backend
         
-        # Load and process with PIL
+        # Load as RGBA but don't resize - variants generated at save time
         img = Image.open(BytesIO(buffer)).convert('RGBA')
-        img = img.resize((COVER_SIZE, COVER_SIZE), Image.Resampling.LANCZOS)
-        radius = max(12, COVER_SIZE // 25)  # 16px at 410
-        img = apply_rounded_corners_pil(img, radius)
         
         return (hash_short, img)
     
     def _save_image(self, hash_short: str, img: Image.Image, temp: bool = False) -> str:
-        """Save processed image to disk and return local path."""
+        """Save all image variants (4 files) and return base local path.
+        
+        Generates 4 variants for fast runtime loading:
+        - {hash}.png          - 410px normal
+        - {hash}_small.png    - 307px normal  
+        - {hash}_dim.png      - 410px dimmed
+        - {hash}_small_dim.png - 307px dimmed
+        """
         # Check if already exists
         if hash_short in self.image_hashes:
             return self.image_hashes[hash_short]
         
-        # Save new image as PNG (preserves transparency)
         prefix = 'temp_' if temp else ''
-        filename = f'{prefix}{int(time.time() * 1000)}-{hash_short}.png'
-        filepath = self.images_path / filename
-        img.save(filepath, 'PNG')
+        base_name = f'{prefix}{hash_short}'
         
-        local_path = f'/images/{filename}'
+        # Generate all 4 variants
+        sizes = [
+            (COVER_SIZE, ''),            # 410px, no suffix
+            (COVER_SIZE_SMALL, '_small') # 307px
+        ]
+        
+        for size, suffix in sizes:
+            # Resize to target size
+            resized = img.resize((size, size), Image.Resampling.LANCZOS)
+            
+            # Apply rounded corners
+            radius = max(12, size // 25)
+            processed = apply_rounded_corners_pil(resized, radius)
+            
+            # Save normal version
+            filename = f'{base_name}{suffix}.png'
+            processed.save(self.images_path / filename, 'PNG')
+            
+            # Save dimmed version
+            dimmed = apply_dimming(processed)
+            dimmed.save(self.images_path / f'{base_name}{suffix}_dim.png', 'PNG')
+        
+        # Return path to main variant (410px normal)
+        local_path = f'/images/{base_name}.png'
         self.image_hashes[hash_short] = local_path
-        logger.info(f'Saved {"temp " if temp else ""}image: {local_path}')
+        logger.info(f'Saved {"temp " if temp else ""}image variants: {local_path} (4 files)')
         return local_path
     
     def download_temp_image(self, image_url: str) -> Optional[str]:
@@ -249,7 +313,10 @@ class CatalogManager:
             return None
     
     def cleanup_temp_images(self) -> int:
-        """Remove all temporary images (prefixed with 'temp_'). Returns count deleted."""
+        """Remove all temporary images (prefixed with 'temp_'). Returns count deleted.
+        
+        Handles all 4 variants per image (normal, small, dim, small_dim).
+        """
         if self.mock_mode:
             return 0
         
@@ -259,13 +326,15 @@ class CatalogManager:
                 if file.name.startswith('temp_') and file.suffix == '.png':
                     file.unlink()
                     deleted += 1
-                    # Remove from hash index
-                    hash_part = file.name.split('-')[-1].replace('.png', '')
-                    self.image_hashes = {h: p for h, p in self.image_hashes.items()
-                                         if p != f'/images/{file.name}'}
+                    # Remove from hash index - extract base hash from filename
+                    # temp_abc12345.png -> abc12345
+                    # temp_abc12345_small.png -> abc12345
+                    base = file.stem.replace('temp_', '').split('_')[0]
+                    if len(base) == 8:  # Valid hash
+                        self.image_hashes.pop(base, None)
             
             if deleted:
-                logger.info(f'Cleanup: {deleted} temp images deleted')
+                logger.info(f'Cleanup: {deleted} temp image files deleted')
             return deleted
             
         except (IOError, OSError) as e:
@@ -337,7 +406,10 @@ class CatalogManager:
             return False
     
     def _create_composite_from_collected(self, context_uri: str) -> Optional[str]:
-        """Create composite image from collected covers and save to disk."""
+        """Create composite image from collected covers and save all variants to disk.
+        
+        Generates 4 variants like regular images for fast runtime loading.
+        """
         if context_uri not in self.playlist_covers:
             return None
         
@@ -346,10 +418,6 @@ class CatalogManager:
             return None
         
         try:
-            half_size = COVER_SIZE // 2  # 205px
-            composite = Image.new('RGBA', (COVER_SIZE, COVER_SIZE), (0, 0, 0, 0))
-            positions = [(0, 0), (half_size, 0), (0, half_size), (half_size, half_size)]
-            
             # Get cover buffers
             cover_buffers = [c['buffer'] for c in covers.values()]
             
@@ -357,33 +425,52 @@ class CatalogManager:
             while len(cover_buffers) < 4 and cover_buffers:
                 cover_buffers.append(cover_buffers[len(cover_buffers) % len(covers)])
             
-            for i, (buffer, pos) in enumerate(zip(cover_buffers, positions)):
-                try:
-                    img = Image.open(BytesIO(buffer)).convert('RGBA')
-                    img = img.resize((half_size, half_size), Image.Resampling.LANCZOS)
-                    composite.paste(img, pos)
-                except Exception as e:
-                    logger.debug(f'Error processing cover {i}: {e}')
-                    # Draw placeholder
-                    draw = ImageDraw.Draw(composite)
-                    draw.rectangle([pos, (pos[0] + half_size, pos[1] + half_size)], fill=(40, 40, 40))
+            # Generate hash from all buffers combined
+            combined = b''.join(cover_buffers)
+            hash_short = hashlib.md5(combined).hexdigest()[:8]
             
-            # Apply rounded corners
-            radius = max(12, COVER_SIZE // 25)
-            composite = apply_rounded_corners_pil(composite, radius)
+            # Check if already exists
+            if hash_short in self.image_hashes:
+                return self.image_hashes[hash_short]
             
-            # Generate hash from composite
-            composite_bytes = BytesIO()
-            composite.save(composite_bytes, 'PNG')
-            hash_short = hashlib.md5(composite_bytes.getvalue()).hexdigest()[:8]
+            base_name = f'{hash_short}_composite'
             
-            # Save composite
-            filename = f'{int(time.time() * 1000)}-{hash_short}_composite.png'
-            filepath = self.images_path / filename
-            composite.save(filepath, 'PNG')
+            # Generate all 4 variants
+            sizes = [
+                (COVER_SIZE, ''),            # 410px
+                (COVER_SIZE_SMALL, '_small') # 307px
+            ]
             
-            local_path = f'/images/{filename}'
-            logger.info(f'Created composite image: {local_path}')
+            for size, suffix in sizes:
+                half_size = size // 2
+                composite = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+                positions = [(0, 0), (half_size, 0), (0, half_size), (half_size, half_size)]
+                
+                for i, (buffer, pos) in enumerate(zip(cover_buffers, positions)):
+                    try:
+                        img = Image.open(BytesIO(buffer)).convert('RGBA')
+                        img = img.resize((half_size, half_size), Image.Resampling.LANCZOS)
+                        composite.paste(img, pos)
+                    except Exception as e:
+                        logger.debug(f'Error processing cover {i}: {e}')
+                        draw = ImageDraw.Draw(composite)
+                        draw.rectangle([pos, (pos[0] + half_size, pos[1] + half_size)], fill=(40, 40, 40))
+                
+                # Apply rounded corners
+                radius = max(12, size // 25)
+                composite = apply_rounded_corners_pil(composite, radius)
+                
+                # Save normal version
+                filename = f'{base_name}{suffix}.png'
+                composite.save(self.images_path / filename, 'PNG')
+                
+                # Save dimmed version
+                dimmed = apply_dimming(composite)
+                dimmed.save(self.images_path / f'{base_name}{suffix}_dim.png', 'PNG')
+            
+            local_path = f'/images/{base_name}.png'
+            self.image_hashes[hash_short] = local_path
+            logger.info(f'Created composite image variants: {local_path} (4 files)')
             return local_path
             
         except Exception as e:
@@ -391,7 +478,10 @@ class CatalogManager:
             return None
     
     def _update_playlist_covers_if_needed(self, context_uri: str):
-        """Update saved playlist with composite when we have enough covers."""
+        """Update saved playlist with composite when we have enough covers.
+        
+        Will update existing composites if new unique covers are collected.
+        """
         covers = self.playlist_covers.get(context_uri, {})
         if len(covers) < 4:
             return  # Wait until we have 4 covers
@@ -403,20 +493,18 @@ class CatalogManager:
             if not item or item.get('type') != 'playlist':
                 return
             
-            # Skip if already has a composite image
-            current_image = item.get('image', '')
-            if '_composite' in current_image:
-                return
-            
-            # Create composite
+            # Create composite (returns existing path if same covers)
             composite_path = self._create_composite_from_collected(context_uri)
             if composite_path:
-                item['image'] = composite_path
-                # Remove old images array if present
-                if 'images' in item:
-                    del item['images']
-                self._save_raw(catalog)
-                logger.info(f'Updated playlist with composite image')
+                current_image = item.get('image', '')
+                # Only update if composite changed
+                if composite_path != current_image:
+                    item['image'] = composite_path
+                    # Remove old images array if present
+                    if 'images' in item:
+                        del item['images']
+                    self._save_raw(catalog)
+                    logger.info(f'Updated playlist with new composite image')
                 
         except (json.JSONDecodeError, IOError, OSError) as e:
             logger.warning(f'Error updating playlist covers: {e}', exc_info=True)
@@ -454,19 +542,22 @@ class CatalogManager:
             if image_url and image_url.startswith('/images/'):
                 image_filename = image_url.replace('/images/', '')
                 if image_filename.startswith('temp_'):
-                    # Rename temp image to permanent
-                    old_path = self.images_path / image_filename
-                    if old_path.exists():
-                        # Extract hash from filename
-                        parts = image_filename.replace('temp_', '').replace('.png', '').split('-')
-                        if len(parts) >= 2:
-                            hash_short = parts[-1]
-                            new_filename = f'{int(time.time() * 1000)}-{hash_short}.png'
-                            new_path = self.images_path / new_filename
-                            old_path.rename(new_path)
-                            local_image = f'/images/{new_filename}'
-                            self.image_hashes[hash_short] = local_image
-                            logger.info(f'Renamed temp image to permanent: {local_image}')
+                    # Extract hash from filename: temp_7b86d360.png -> 7b86d360
+                    hash_short = image_filename.replace('temp_', '').replace('.png', '')
+                    
+                    # Rename all 4 variant files from temp to permanent
+                    variants_renamed = 0
+                    for suffix in ['', '_small', '_dim', '_small_dim']:
+                        old_variant = self.images_path / f'temp_{hash_short}{suffix}.png'
+                        new_variant = self.images_path / f'{hash_short}{suffix}.png'
+                        if old_variant.exists():
+                            old_variant.rename(new_variant)
+                            variants_renamed += 1
+                    
+                    if variants_renamed > 0:
+                        local_image = f'/images/{hash_short}.png'
+                        self.image_hashes[hash_short] = local_image
+                        logger.info(f'Renamed temp image to permanent: {local_image} ({variants_renamed} files)')
                 else:
                     # Already permanent image, reuse it
                     local_image = image_url
@@ -641,31 +732,56 @@ class CatalogManager:
     # ============================================
     
     def cleanup_unused_images(self) -> int:
-        """Delete images not referenced in catalog. Returns count deleted."""
+        """Delete images not referenced in catalog. Returns count deleted.
+        
+        Handles all 4 variants per image - if base image is used, keep all variants.
+        """
         if self.mock_mode:
             return 0
         
         try:
             catalog = self._load_raw()
             
-            # Collect all used images
-            used = set()
+            # Collect base names of used images (without variants)
+            # /images/abc12345.png -> abc12345
+            # /images/abc12345_composite.png -> abc12345_composite
+            used_bases = set()
             for item in catalog['items']:
-                if item.get('image', '').startswith('/images/'):
-                    used.add(item['image'].replace('/images/', ''))
+                img_path = item.get('image', '')
+                if img_path.startswith('/images/'):
+                    filename = img_path.replace('/images/', '')
+                    # Extract base name (remove .png and any variant suffix)
+                    base = filename.replace('.png', '')
+                    # Remove variant suffixes to get true base
+                    for suffix in ['_small_dim', '_small', '_dim']:
+                        if base.endswith(suffix):
+                            base = base[:-len(suffix)]
+                            break
+                    used_bases.add(base)
             
-            # Find and delete unused
+            # Find and delete unused (check if file's base is in used_bases)
             deleted = 0
             for file in self.images_path.iterdir():
-                if file.name not in used and file.suffix in ('.jpg', '.png'):
+                if file.suffix not in ('.jpg', '.png'):
+                    continue
+                
+                # Extract base name from file
+                base = file.stem
+                for suffix in ['_small_dim', '_small', '_dim']:
+                    if base.endswith(suffix):
+                        base = base[:-len(suffix)]
+                        break
+                
+                if base not in used_bases:
                     file.unlink()
                     deleted += 1
-                    # Remove from hash index
-                    self.image_hashes = {h: p for h, p in self.image_hashes.items()
-                                         if p != f'/images/{file.name}'}
             
+            # Rebuild hash index
             if deleted:
-                logger.info(f'Cleanup: {deleted} unused images deleted')
+                self.image_hashes.clear()
+                self._index_existing_images()
+                logger.info(f'Cleanup: {deleted} unused image files deleted')
+            
             return deleted
             
         except (IOError, OSError) as e:

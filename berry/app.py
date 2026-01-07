@@ -17,7 +17,7 @@ from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, COLORS,
     LIBRESPOT_URL, LIBRESPOT_WS, 
     CATALOG_PATH, IMAGES_DIR, ICONS_DIR,
-    MOCK_MODE, VOLUME_LEVELS,
+    MOCK_MODE, VOLUME_LEVELS, PROFILE_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
     CAROUSEL_Y, CONTROLS_Y, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
     PROGRESS_SAVE_INTERVAL,
@@ -25,7 +25,7 @@ from .config import (
 )
 from .models import CatalogItem, NowPlaying
 from .api import LibrespotAPI, CatalogManager
-from .handlers import TouchHandler, EventListener
+from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager
 from .ui import ImageCache, Renderer
 
@@ -117,19 +117,31 @@ class Berry:
         if fullscreen:
             flags |= pygame.FULLSCREEN
         
+        # Create display at screen dimensions
         try:
             self.screen = pygame.display.set_mode(
-                (SCREEN_WIDTH, SCREEN_HEIGHT), 
+                (SCREEN_WIDTH, SCREEN_HEIGHT),
                 flags | pygame.HWSURFACE
             )
         except pygame.error:
             self.screen = pygame.display.set_mode(
-                (SCREEN_WIDTH, SCREEN_HEIGHT), 
+                (SCREEN_WIDTH, SCREEN_HEIGHT),
                 flags
             )
         
         self.clock = pygame.time.Clock()
         pygame.mouse.set_visible(not fullscreen)
+        
+        # Start evdev touch handler for KMSDRM (SDL doesn't read touch automatically)
+        self._evdev_touch = None
+        actual_driver = pygame.display.get_driver()
+        if actual_driver.upper() == 'KMSDRM':
+            self._evdev_touch = EvdevTouchHandler(SCREEN_WIDTH, SCREEN_HEIGHT)
+            if self._evdev_touch.start():
+                logger.info('Evdev touch handler started (KMSDRM mode)')
+            else:
+                logger.warning('Evdev touch handler failed to start')
+                self._evdev_touch = None
         
         self._log_video_info()
     
@@ -294,8 +306,20 @@ class Berry:
         actual_driver = pygame.display.get_driver()
         info = pygame.display.Info()
         
+        # Check if using GPU acceleration
+        gpu_accelerated = actual_driver.lower() in ('kmsdrm', 'x11', 'wayland')
+        hw_accel = info.hw or False  # Hardware surface support
+        
         logger.info(f'Display: {actual_driver} (requested: {video_driver})')
-        logger.info(f'Resolution: {info.current_w}x{info.current_h}')
+        logger.info(f'Resolution: {SCREEN_WIDTH}x{SCREEN_HEIGHT}')
+        logger.info(f'GPU acceleration: {"YES" if gpu_accelerated else "NO (software rendering)"}')
+        logger.info(f'Hardware surfaces: {"YES" if hw_accel else "NO"}')
+        
+        # Warn if software rendering
+        if not gpu_accelerated:
+            logger.warning('=' * 60)
+            logger.warning('⚠️  SOFTWARE RENDERING - Animations will be slow!')
+            logger.warning('=' * 60)
         
         # Check for Raspberry Pi
         if os.path.exists('/proc/device-tree/model'):
@@ -308,9 +332,9 @@ class Berry:
                 if actual_driver not in ('kmsdrm', 'KMSDRM'):
                     kms_available = self._check_kms_available()
                     if not kms_available:
-                        logger.debug('KMS/DRM not detected - GPU acceleration unavailable')
+                        logger.warning('KMS/DRM not detected - enable GPU driver with raspi-config')
                     else:
-                        logger.debug('KMS/DRM detected but not using kmsdrm driver')
+                        logger.warning('KMS/DRM detected but kmsdrm driver failed')
             except Exception:
                 pass
     
@@ -374,6 +398,12 @@ class Berry:
         """Start the application."""
         logger.info('Starting Berry...')
         
+        # Enable profiler if --profile flag was passed
+        if PROFILE_MODE:
+            self.perf_monitor.profiler.enable()
+            self.renderer.set_profiler(self.perf_monitor.profiler.mark)
+            logger.info('Frame profiler ENABLED (--profile flag)')
+        
         if self.needs_setup:
             logger.info('Setup mode: waiting for Spotify connection')
             logger.info('Connect to "Berry" in your Spotify app')
@@ -408,14 +438,25 @@ class Berry:
                 self._handle_events()
                 continue
             
+            # Frame profiling (if enabled)
+            profiler = self.perf_monitor.profiler
+            profiler.start_frame()
+            
             self._handle_events()
+            profiler.mark('events')
+            
             self._update(dt)
+            profiler.mark('update')
+            
             dirty_rects = self._draw()
+            profiler.mark('draw')
             
             if dirty_rects:
                 pygame.display.update(dirty_rects)
             else:
                 pygame.display.flip()
+            profiler.mark('flip')
+            profiler.end_frame()
             
             # Dynamic FPS based on current activity (after update/draw):
             # - 60 FPS: carousel animation, touch dragging, loading spinner
@@ -473,6 +514,9 @@ class Berry:
         logger.info('Shutting down...')
         self._save_progress_on_shutdown()
         
+        # Stop handlers
+        if self._evdev_touch:
+            self._evdev_touch.stop()
         self.events.stop()
         pygame.quit()
         logger.info('Berry stopped')
@@ -694,6 +738,13 @@ class Berry:
             self.api.next()
         elif key == pygame.K_p:
             self.api.prev()
+        elif key == pygame.K_d:  # Debug: toggle frame profiler
+            if self.perf_monitor.profiler.enabled:
+                self.perf_monitor.profiler.disable()
+                self.renderer.set_profiler(None)
+            else:
+                self.perf_monitor.profiler.enable()
+                self.renderer.set_profiler(self.perf_monitor.profiler.mark)
     
     def _handle_touch_down(self, pos):
         """Handle touch/mouse down."""

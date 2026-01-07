@@ -4,7 +4,7 @@ Renderer - All drawing/rendering logic for the Berry UI.
 import logging
 import time
 import math
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Callable
 
 import pygame
 import pygame.gfxdraw
@@ -55,6 +55,18 @@ class Renderer:
         # Button hit rectangles (updated during draw)
         self.add_button_rect: Optional[Tuple[int, int, int, int]] = None
         self.delete_button_rect: Optional[Tuple[int, int, int, int]] = None
+        
+        # Profiler callback (set by app.py when profiling is enabled)
+        self._profile_mark: Optional[Callable[[str], None]] = None
+    
+    def set_profiler(self, mark_fn: Optional[Callable[[str], None]]):
+        """Set the profiler mark function for detailed draw timing."""
+        self._profile_mark = mark_fn
+    
+    def _mark(self, section: str):
+        """Mark a profiler section if profiling is enabled."""
+        if self._profile_mark:
+            self._profile_mark(section)
     
     def invalidate(self):
         """Force a full redraw on next frame."""
@@ -158,18 +170,25 @@ class Renderer:
         if self._needs_full_redraw:
             # Full redraw
             self._draw_background()
+            self._mark('draw_bg')
+            
             self._draw_track_info(current_item, now_playing)
+            self._mark('draw_track')
+            
             # Show pause icon when pending play (immediate response to user action)
             show_as_playing = now_playing.playing or pending_play
             self._draw_controls(show_as_playing, volume_index, pressed_button)
+            self._mark('draw_controls')
             
             # Cache static parts
             if self._static_layer is None:
                 self._static_layer = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
             self._static_layer.blit(self.screen, (0, 0))
+            self._mark('cache_static')
             
             # Draw carousel
             self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id, loading)
+            self._mark('draw_carousel')
             
             self._needs_full_redraw = False
             return None
@@ -179,7 +198,10 @@ class Renderer:
             self.screen.blit(self._static_layer, 
                            self._carousel_rect.topleft, 
                            self._carousel_rect)
+            self._mark('blit_static')
+            
             self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id, loading)
+            self._mark('draw_carousel')
             return [self._carousel_rect]
         
         else:
@@ -188,7 +210,10 @@ class Renderer:
                 self.screen.blit(self._static_layer,
                                self._carousel_rect.topleft,
                                self._carousel_rect)
+                self._mark('blit_static')
+                
                 self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id, loading)
+                self._mark('draw_carousel')
                 return [self._carousel_rect]
             return []
     
@@ -339,6 +364,7 @@ class Renderer:
         center_cover_rect = None
         center_item = None
         
+        # Draw covers
         for i in range(start_i, end_i):
             item = items[i]
             offset = i - scroll_x
@@ -364,12 +390,16 @@ class Renderer:
             
             self.screen.blit(cover, (draw_x, draw_y))
         
+        self._mark('carousel_covers')
+        
         if center_cover_rect and center_item:
             self._draw_cover_progress(center_cover_rect, center_item, now_playing)
+            self._mark('carousel_progress')
             
             # Draw loading spinner if loading
             if loading:
                 self._draw_loading_spinner(center_cover_rect)
+                self._mark('carousel_spinner')
             
             if center_item.is_temp:
                 self._draw_add_button(center_cover_rect)

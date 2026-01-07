@@ -158,6 +158,7 @@ def main():
     print('   Space   Play/Pause')
     print('   N       Next track')
     print('   P       Previous track')
+    print('   D       Toggle frame profiler')
     print('   Esc     Quit')
     print()
     
