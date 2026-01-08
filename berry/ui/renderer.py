@@ -87,7 +87,8 @@ class Renderer:
              pressed_button: Optional[str] = None,
              loading: bool = False,
              pending_play: bool = False,
-             needs_setup: bool = False) -> Optional[List[pygame.Rect]]:
+             needs_setup: bool = False,
+             optimistic_playing: Optional[bool] = None) -> Optional[List[pygame.Rect]]:
         """
         Main draw method.
         
@@ -95,6 +96,7 @@ class Renderer:
             loading: If True, show spinner (has 200ms delay to avoid flicker)
             pending_play: If True, show pause icon (immediate, no delay)
             needs_setup: If True, show Spotify setup instructions
+            optimistic_playing: Immediate play/pause state (None = use now_playing.playing)
         
         Returns list of dirty rects for partial update, or None for full flip.
         """
@@ -176,8 +178,8 @@ class Renderer:
             self._draw_track_info(current_item, now_playing)
             self._mark('draw_track')
             
-            # Show pause icon when pending play (immediate response to user action)
-            show_as_playing = now_playing.playing or pending_play
+            # Use optimistic state for immediate visual feedback
+            show_as_playing = optimistic_playing if optimistic_playing is not None else now_playing.playing
             self._draw_controls(show_as_playing, volume_index, pressed_button)
             self._mark('draw_controls')
             

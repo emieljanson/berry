@@ -25,7 +25,6 @@ SCREEN_HEIGHT = 1280
 
 LIBRESPOT_URL = os.environ.get('LIBRESPOT_URL', 'http://localhost:3678')
 LIBRESPOT_WS = os.environ.get('LIBRESPOT_WS', 'ws://localhost:3678/events')
-BACKEND_URL = os.environ.get('BACKEND_URL', 'http://localhost:3001')
 
 # ============================================
 # PATHS
@@ -95,6 +94,8 @@ CONTROLS_X = 85      # Center of play button (25px margin + 60px radius)
 
 # For carousel center along physical Y (user's horizontal): Y = 640 (center of 1280)
 CAROUSEL_CENTER_Y = 640
+CAROUSEL_Y = CAROUSEL_CENTER_Y - COVER_SIZE // 2  # Top of carousel for touch detection
+CONTROLS_Y = CAROUSEL_CENTER_Y  # Center of buttons (same as carousel center)
 
 # Button sizes
 BTN_SIZE = 100

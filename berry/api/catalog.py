@@ -466,6 +466,9 @@ class CatalogManager:
                 radius = max(12, size // 25)
                 composite = apply_rounded_corners_pil(composite, radius)
                 
+                # Rotate 90° CW for portrait display mode (like regular covers)
+                composite = composite.transpose(Image.Transpose.ROTATE_270)
+                
                 # Save normal version
                 filename = f'{base_name}{suffix}.png'
                 composite.save(self.images_path / filename, 'PNG')

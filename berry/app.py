@@ -17,9 +17,9 @@ from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, COLORS,
     LIBRESPOT_URL, LIBRESPOT_WS, 
     CATALOG_PATH, IMAGES_DIR, ICONS_DIR,
-    MOCK_MODE, VOLUME_LEVELS, PROFILE_MODE,
+    MOCK_MODE, VOLUME_LEVELS,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
-    CAROUSEL_X, CAROUSEL_CENTER_Y, CONTROLS_X, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
+    CAROUSEL_X, CAROUSEL_Y, CAROUSEL_CENTER_Y, CONTROLS_X, CONTROLS_Y, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
     PROGRESS_SAVE_INTERVAL,
     has_spotify_credentials,
 )
@@ -117,31 +117,19 @@ class Berry:
         if fullscreen:
             flags |= pygame.FULLSCREEN
         
-        # Create display at screen dimensions
         try:
             self.screen = pygame.display.set_mode(
-                (SCREEN_WIDTH, SCREEN_HEIGHT),
+                (SCREEN_WIDTH, SCREEN_HEIGHT), 
                 flags | pygame.HWSURFACE
             )
         except pygame.error:
             self.screen = pygame.display.set_mode(
-                (SCREEN_WIDTH, SCREEN_HEIGHT),
+                (SCREEN_WIDTH, SCREEN_HEIGHT), 
                 flags
             )
         
         self.clock = pygame.time.Clock()
         pygame.mouse.set_visible(not fullscreen)
-        
-        # Start evdev touch handler for KMSDRM (SDL doesn't read touch automatically)
-        self._evdev_touch = None
-        actual_driver = pygame.display.get_driver()
-        if actual_driver.upper() == 'KMSDRM':
-            self._evdev_touch = EvdevTouchHandler(SCREEN_WIDTH, SCREEN_HEIGHT)
-            if self._evdev_touch.start():
-                logger.info('Evdev touch handler started (KMSDRM mode)')
-            else:
-                logger.warning('Evdev touch handler failed to start')
-                self._evdev_touch = None
         
         self._log_video_info()
     
@@ -163,6 +151,10 @@ class Berry:
         # Handlers
         self.touch = TouchHandler()
         self.events = EventListener(LIBRESPOT_WS, self._on_ws_update, self._on_ws_reconnect)
+        
+        # Evdev touch handler for KMSDRM mode (reads /dev/input directly)
+        self.evdev_touch = EvdevTouchHandler(SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.evdev_touch.start()  # Starts background thread if touchscreen found
         
         # Managers
         self.sleep_manager = SleepManager()
@@ -230,6 +222,9 @@ class Berry:
         self._pressed_time = 0
         self._volume_change_time = 0  # Track local volume changes for sync cooldown
         
+        # Optimistic UI state - immediate visual feedback on play/pause
+        self._optimistic_playing: Optional[bool] = None  # None = use real state
+        
         # Audio feedback (click sound)
         self._click_sound = self._create_click_sound()
         
@@ -250,7 +245,7 @@ class Berry:
         self._update_carousel_max_index()
     
     def _load_icons(self) -> dict:
-        """Load icon images and rotate for portrait display mode."""
+        """Load icon images."""
         icons = {}
         icon_files = {
             'play': 'play-fill.png',
@@ -265,9 +260,7 @@ class Berry:
         }
         for name, filename in icon_files.items():
             try:
-                icon = pygame.image.load(ICONS_DIR / filename).convert_alpha()
-                # Rotate 90° CW for portrait display mode
-                icons[name] = pygame.transform.rotate(icon, -90)
+                icons[name] = pygame.image.load(ICONS_DIR / filename).convert_alpha()
             except Exception as e:
                 logger.warning(f'Failed to load icon {filename}: {e}', exc_info=True)
         return icons
@@ -308,20 +301,8 @@ class Berry:
         actual_driver = pygame.display.get_driver()
         info = pygame.display.Info()
         
-        # Check if using GPU acceleration
-        gpu_accelerated = actual_driver.lower() in ('kmsdrm', 'x11', 'wayland')
-        hw_accel = info.hw or False  # Hardware surface support
-        
         logger.info(f'Display: {actual_driver} (requested: {video_driver})')
-        logger.info(f'Resolution: {SCREEN_WIDTH}x{SCREEN_HEIGHT}')
-        logger.info(f'GPU acceleration: {"YES" if gpu_accelerated else "NO (software rendering)"}')
-        logger.info(f'Hardware surfaces: {"YES" if hw_accel else "NO"}')
-        
-        # Warn if software rendering
-        if not gpu_accelerated:
-            logger.warning('=' * 60)
-            logger.warning('SOFTWARE RENDERING - Animations will be slow!')
-            logger.warning('=' * 60)
+        logger.info(f'Resolution: {info.current_w}x{info.current_h}')
         
         # Check for Raspberry Pi
         if os.path.exists('/proc/device-tree/model'):
@@ -334,9 +315,9 @@ class Berry:
                 if actual_driver not in ('kmsdrm', 'KMSDRM'):
                     kms_available = self._check_kms_available()
                     if not kms_available:
-                        logger.warning('KMS/DRM not detected - enable GPU driver with raspi-config')
+                        logger.debug('KMS/DRM not detected - GPU acceleration unavailable')
                     else:
-                        logger.warning('KMS/DRM detected but kmsdrm driver failed')
+                        logger.debug('KMS/DRM detected but not using kmsdrm driver')
             except Exception:
                 pass
     
@@ -400,12 +381,6 @@ class Berry:
         """Start the application."""
         logger.info('Starting Berry...')
         
-        # Enable profiler if --profile flag was passed
-        if PROFILE_MODE:
-            self.perf_monitor.profiler.enable()
-            self.renderer.set_profiler(self.perf_monitor.profiler.mark)
-            logger.info('Frame profiler ENABLED (--profile flag)')
-        
         if self.needs_setup:
             logger.info('Setup mode: waiting for Spotify connection')
             logger.info('Connect to "Berry" in your Spotify app')
@@ -434,31 +409,24 @@ class Berry:
         
         # Main loop
         while self.running:
-            # Sleep mode: minimal CPU usage, only check for wake events
+            # Sleep mode: block until event arrives (0% CPU, instant wake)
             if self.sleep_manager.is_sleeping:
-                self.clock.tick(1)  # 1 FPS during sleep
-                self._handle_events()
+                event = pygame.event.wait()  # Blocks until event
+                if event.type in (pygame.MOUSEBUTTONDOWN, pygame.KEYDOWN):
+                    self.sleep_manager.wake_up()
+                    self._on_wake()
+                elif event.type == pygame.QUIT:
+                    self.running = False
                 continue
             
-            # Frame profiling (if enabled)
-            profiler = self.perf_monitor.profiler
-            profiler.start_frame()
-            
             self._handle_events()
-            profiler.mark('events')
-            
             self._update(dt)
-            profiler.mark('update')
-            
             dirty_rects = self._draw()
-            profiler.mark('draw')
             
             if dirty_rects:
                 pygame.display.update(dirty_rects)
             else:
                 pygame.display.flip()
-            profiler.mark('flip')
-            profiler.end_frame()
             
             # Dynamic FPS based on current activity (after update/draw):
             # - 60 FPS: carousel animation, touch dragging, loading spinner
@@ -498,7 +466,19 @@ class Berry:
                 else:
                     log_target_fps = 5
                 
-                logger.info(f'FPS: {avg_fps:.1f} | connected={self.connected} | playing={self.now_playing.playing} | loading={self._is_loading} | target={log_target_fps}')
+                # Show loading reasons if loading
+                if self._is_loading:
+                    reasons = []
+                    if self._paused_for_navigation:
+                        reasons.append('paused_nav')
+                    if self.play_timer.item:
+                        reasons.append(f'timer:{self.play_timer.item.name[:15]}')
+                    if self._play_in_progress:
+                        reasons.append('play_req')
+                    reason_str = ','.join(reasons) if reasons else '?'
+                    logger.info(f'FPS: {avg_fps:.1f} | connected={self.connected} | playing={self.now_playing.playing} | loading={self._is_loading} ({reason_str}) | target={log_target_fps}')
+                else:
+                    logger.info(f'FPS: {avg_fps:.1f} | connected={self.connected} | playing={self.now_playing.playing} | loading={self._is_loading} | target={log_target_fps}')
                 
                 # Warn if FPS is significantly below target:
                 # - Target 60 FPS (animations): warn if < 30 FPS (50% below)
@@ -516,10 +496,8 @@ class Berry:
         logger.info('Shutting down...')
         self._save_progress_on_shutdown()
         
-        # Stop handlers
-        if self._evdev_touch:
-            self._evdev_touch.stop()
         self.events.stop()
+        self.evdev_touch.stop()
         pygame.quit()
         logger.info('Berry stopped')
     
@@ -594,6 +572,9 @@ class Berry:
                 duration=track.get('duration', 0),
             )
             
+            # Clear optimistic state - real data received
+            self._optimistic_playing = None
+            
             # Handle volume ownership
             spotify_volume = status.get('volume')
             if spotify_volume is not None:
@@ -645,8 +626,6 @@ class Berry:
         if not context_uri:
             if self.temp_item:
                 self.temp_item = None
-                # Cleanup temp images when temp item is removed
-                self.catalog_manager.cleanup_temp_images()
                 self._update_carousel_max_index()
                 self.renderer.invalidate()
             return
@@ -656,34 +635,32 @@ class Berry:
         if in_catalog:
             if self.temp_item:
                 self.temp_item = None
-                # Cleanup temp images when temp item is removed
-                self.catalog_manager.cleanup_temp_images()
                 self._update_carousel_max_index()
                 self.renderer.invalidate()
             return
         
         # Create/update tempItem
         is_playlist = 'playlist' in context_uri
+        collected_covers = self.catalog_manager.get_collected_covers(context_uri) if is_playlist else None
+        
+        current_cover_count = len(self.temp_item.images or []) if self.temp_item else 0
+        new_cover_count = len(collected_covers or [])
         
         needs_update = (
             not self.temp_item or 
-            self.temp_item.uri != context_uri
+            self.temp_item.uri != context_uri or
+            new_cover_count > current_cover_count
         )
         
         if needs_update:
-            # Download temp image if URL provided
-            image_url = self.now_playing.track_cover
-            local_image = None
-            if image_url and image_url.startswith('http'):
-                local_image = self.catalog_manager.download_temp_image(image_url)
-            
             self.temp_item = CatalogItem(
                 id='temp',
                 uri=context_uri,
                 name=self.now_playing.track_album or ('Playlist' if is_playlist else 'Album'),
                 type='playlist' if is_playlist else 'album',
                 artist=self.now_playing.track_artist,
-                image=local_image or image_url,  # Use local image if available, else URL
+                image=self.now_playing.track_cover,
+                images=collected_covers,
                 is_temp=True
             )
             self._update_carousel_max_index()
@@ -697,6 +674,7 @@ class Berry:
                 self.running = False
             
             elif event.type == pygame.MOUSEBUTTONDOWN:
+                logger.info(f'Event: MOUSEBUTTONDOWN at {event.pos}')
                 if self.sleep_manager.is_sleeping:
                     self.sleep_manager.wake_up()
                     self._on_wake()
@@ -723,6 +701,7 @@ class Berry:
                         self.renderer.invalidate()
             
             elif event.type == pygame.MOUSEBUTTONUP:
+                logger.info(f'Event: MOUSEBUTTONUP at {event.pos}')
                 if not self.sleep_manager.is_sleeping:
                     self._handle_touch_up(event.pos)
     
@@ -740,20 +719,20 @@ class Berry:
             self.api.next()
         elif key == pygame.K_p:
             self.api.prev()
-        elif key == pygame.K_d:  # Debug: toggle frame profiler
-            if self.perf_monitor.profiler.enabled:
-                self.perf_monitor.profiler.disable()
-                self.renderer.set_profiler(None)
-            else:
-                self.perf_monitor.profiler.enable()
-                self.renderer.set_profiler(self.perf_monitor.profiler.mark)
     
     def _handle_touch_down(self, pos):
         """Handle touch/mouse down."""
         x, y = pos
         
-        # Check button clicks (add/delete)
+        # Carousel touch zone (matches render area)
+        carousel_x_min = CAROUSEL_X - 50   # 135
+        carousel_x_max = CAROUSEL_X + COVER_SIZE + 50  # 645
+        
+        logger.info(f'Touch down: pos={pos}, carousel_x_range={carousel_x_min}-{carousel_x_max}')
+        
+        # Check button clicks
         if self._check_button_click(pos):
+            logger.info('Touch down: button click')
             return
         
         # Cancel delete mode
@@ -761,18 +740,15 @@ class Berry:
             self.delete_mode_id = None
             self.renderer.invalidate()
         
-        # Handle control buttons (just show pressed state, action on release)
-        # Portrait mode: x is user's vertical, check if touch is in controls area
-        if CONTROLS_X - PLAY_BTN_SIZE <= x <= CONTROLS_X + PLAY_BTN_SIZE:
-            self._handle_button_down(pos)
-            return
-        
-        # Handle carousel swipes
-        # Portrait mode: carousel is in the middle X band
-        if CAROUSEL_X <= x <= CAROUSEL_X + COVER_SIZE + 50:
+        # Carousel swipes - within carousel X zone, full Y range
+        if carousel_x_min <= x <= carousel_x_max:
+            logger.info('Touch down: carousel swipe start')
             self.touch.on_down(pos)
             self.user_interacting = True
             self.play_timer.cancel()
+        else:
+            logger.info('Touch down: outside carousel')
+            self._handle_button_tap(pos)
     
     def _check_button_click(self, pos) -> bool:
         """Check if click is on add/delete button."""
@@ -794,12 +770,9 @@ class Berry:
     
     def _handle_touch_up(self, pos):
         """Handle touch/mouse up."""
-        # Handle button release first (separate from carousel)
-        if self._pressed_button:
-            self._handle_button_up(pos)
-            return
-        
+        logger.info(f'Touch up: pos={pos}, dragging={self.touch.dragging}')
         if not self.touch.dragging:
+            logger.info('Touch up: ignored (not dragging)')
             return
         
         drag_index_offset = -self.touch.drag_offset / (COVER_SIZE + COVER_SPACING)
@@ -809,20 +782,19 @@ class Berry:
         self.carousel.scroll_x = visual_position
         
         x, y = pos
-        # Portrait mode: carousel along Y axis (user's horizontal)
-        center_y = CAROUSEL_CENTER_Y
+        center_x = SCREEN_WIDTH // 2
         
         if action in ('left', 'right'):
             # Calculate target based on position + velocity
-            # Note: 'left'/'right' from touch handler = swipe along Y axis in portrait
             abs_vel = abs(velocity)
-            # Higher thresholds = less sensitive (need faster swipe for bonus)
-            velocity_bonus = 0 if abs_vel < 1.5 else (1 if abs_vel < 2.5 else (2 if abs_vel < 4.0 else 3))
+            velocity_bonus = 0 if abs_vel < 1.0 else (1 if abs_vel < 2.0 else (2 if abs_vel < 3.5 else 3))
             
             base_target = round(visual_position)
             target = base_target + velocity_bonus if velocity < 0 else base_target - velocity_bonus
             
-            # Clamp to valid range
+            # Clamp
+            max_jump = 5
+            target = max(self.selected_index - max_jump, min(target, self.selected_index + max_jump))
             target = max(0, min(target, len(self.display_items) - 1))
             
             self._snap_to(target)
@@ -833,10 +805,13 @@ class Berry:
                 logger.debug('Carousel tap debounced')
                 return
             
-            # Portrait mode: check Y position (user's horizontal)
-            if y < center_y - 100:
+            # Carousel runs along Y axis - check Y position for tap target
+            center_y = CAROUSEL_CENTER_Y  # 640
+            if y < center_y - COVER_SIZE // 2:
+                # Tap on previous item (lower Y)
                 self._navigate(-1)
-            elif y > center_y + 100:
+            elif y > center_y + COVER_SIZE // 2:
+                # Tap on next item (higher Y)
                 self._navigate(1)
             elif self.connected or self.mock_mode:
                 # Only toggle play if connected
@@ -852,94 +827,60 @@ class Berry:
                 logger.info(f'Carousel tap IGNORED (disconnected)')
                 logger.info(f'  connected={self.connected}, fail_count={self._connection_fail_count}')
     
-    def _handle_button_down(self, pos):
-        """Handle button press down - show pressed state only, action on release."""
-        x, y = pos
-        # Portrait mode: buttons laid out along Y axis (user's horizontal)
-        center_y = CAROUSEL_CENTER_Y
-        btn_spacing = BTN_SPACING
+    def _handle_button_tap(self, pos):
+        """Handle direct tap on control buttons with debouncing.
         
-        right_cover_edge = center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
-        vol_y = right_cover_edge - BTN_SIZE // 2
-        
-        button = None
-        if center_y - btn_spacing - BTN_SIZE <= y <= center_y - btn_spacing + BTN_SIZE:
-            button = 'prev'
-        elif center_y - PLAY_BTN_SIZE <= y <= center_y + PLAY_BTN_SIZE:
-            button = 'play'
-        elif center_y + btn_spacing - BTN_SIZE <= y <= center_y + btn_spacing + BTN_SIZE:
-            button = 'next'
-        elif vol_y - BTN_SIZE <= y <= vol_y + BTN_SIZE:
-            button = 'volume'
-        
-        if button:
-            logger.debug(f'Button down: {button}')
-            self._pressed_button = button
-            self._pressed_time = time.time()
-            # Force immediate visual feedback
-            self.renderer.invalidate()  # Force full redraw to show pressed state
-            self._draw()
-            pygame.display.flip()
-    
-    def _handle_button_up(self, pos):
-        """Handle button release - execute action if still on same button."""
-        if not self._pressed_button:
-            return
-        
-        pressed = self._pressed_button
-        self._pressed_button = None
-        
-        # Debounce
+        Portrait mode: buttons stacked vertically at X=CONTROLS_X, along Y axis.
+        """
+        # Debounce: ignore taps within 300ms of each other
         now = time.time()
         if now - self._last_action_time < self._action_debounce:
-            logger.debug(f'Button release debounced')
-            self.renderer.invalidate()
+            logger.debug(f'Button tap debounced at ({pos[0]}, {pos[1]})')
             return
         
-        # Don't process API actions if disconnected
+        # Don't process API actions if disconnected (except volume which is local too)
         if not self.connected and not self.mock_mode:
-            logger.debug(f'Button release ignored (disconnected)')
-            self.renderer.invalidate()
+            logger.info(f'Button tap IGNORED (disconnected) at ({pos[0]}, {pos[1]})')
+            logger.info(f'  connected={self.connected}, fail_count={self._connection_fail_count}')
             return
         
         x, y = pos
-        # Portrait mode: buttons laid out along Y axis (user's horizontal)
-        center_y = CAROUSEL_CENTER_Y
-        btn_spacing = BTN_SPACING
-        # Volume button position along Y axis
-        right_cover_edge = center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
-        vol_y = right_cover_edge - BTN_SIZE // 2
+        center_y = CONTROLS_Y  # 640
+        btn_spacing = BTN_SPACING  # 155
         
-        # Check which button the release is on
-        # Portrait mode: x is user's vertical, y is user's horizontal
-        released_on = None
+        # Volume button Y position (matches renderer)
+        vol_y = center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2 - BTN_SIZE // 2
+        
+        # Portrait mode: check if X is in button column
         if CONTROLS_X - PLAY_BTN_SIZE <= x <= CONTROLS_X + PLAY_BTN_SIZE:
-            if center_y - btn_spacing - BTN_SIZE <= y <= center_y - btn_spacing + BTN_SIZE:
-                released_on = 'prev'
-            elif center_y - PLAY_BTN_SIZE <= y <= center_y + PLAY_BTN_SIZE:
-                released_on = 'play'
-            elif center_y + btn_spacing - BTN_SIZE <= y <= center_y + btn_spacing + BTN_SIZE:
-                released_on = 'next'
-            elif vol_y - BTN_SIZE <= y <= vol_y + BTN_SIZE:
-                released_on = 'volume'
-        
-        # Execute action only if released on the same button that was pressed
-        if released_on == pressed:
-            logger.info(f'Button release: {released_on}')
-            logger.debug(f'  connected={self.connected}, playing={self.now_playing.playing}')
-            self._last_action_time = now
-            self._play_click()
+            button_pressed = None
             
-            if released_on == 'prev':
+            # Prev: Y = center_y - btn_spacing (485)
+            if center_y - btn_spacing - BTN_SIZE <= y <= center_y - btn_spacing + BTN_SIZE:
+                button_pressed = 'prev'
                 threading.Thread(target=self.api.prev, daemon=True).start()
-            elif released_on == 'play':
+            # Play: Y = center_y (640)
+            elif center_y - PLAY_BTN_SIZE <= y <= center_y + PLAY_BTN_SIZE:
+                button_pressed = 'play'
                 self._toggle_play()
-            elif released_on == 'next':
+            # Next: Y = center_y + btn_spacing (795)
+            elif center_y + btn_spacing - BTN_SIZE <= y <= center_y + btn_spacing + BTN_SIZE:
+                button_pressed = 'next'
                 threading.Thread(target=self.api.next, daemon=True).start()
-            elif released_on == 'volume':
+            # Volume: Y = vol_y (~1173)
+            elif vol_y - BTN_SIZE <= y <= vol_y + BTN_SIZE:
+                button_pressed = 'volume'
                 self._toggle_volume()
-        
-        self.renderer.invalidate()
+            
+            if button_pressed:
+                logger.info(f'Button press: {button_pressed}')
+                logger.debug(f'  connected={self.connected}, playing={self.now_playing.playing}')
+                logger.debug(f'  paused={self.now_playing.paused}, context={self.now_playing.context_uri}')
+                self._last_action_time = now
+                self._pressed_button = button_pressed
+                self._pressed_time = now
+                self._play_click()
+                self.renderer.invalidate()
     
     def _snap_to(self, target_index: int):
         """Snap carousel to a specific index."""
@@ -961,17 +902,6 @@ class Berry:
                     logger.info('Pausing for navigation...')
                     self._paused_for_navigation = True
                     self._paused_context_uri = self.now_playing.context_uri
-                    # Update UI immediately (optimistic update)
-                    self.now_playing = NowPlaying(
-                        playing=False, paused=True, stopped=False,
-                        context_uri=self.now_playing.context_uri,
-                        track_name=self.now_playing.track_name,
-                        track_artist=self.now_playing.track_artist,
-                        track_album=self.now_playing.track_album,
-                        track_cover=self.now_playing.track_cover,
-                        position=self.now_playing.position,
-                        duration=self.now_playing.duration,
-                    )
                     threading.Thread(target=self.api.pause, daemon=True).start()
             
             item = items[target_index]
@@ -985,17 +915,6 @@ class Berry:
                     self._paused_for_navigation = False
                     self._paused_context_uri = None
                     self.play_timer.cancel()
-                    # Update UI immediately (optimistic update)
-                    self.now_playing = NowPlaying(
-                        playing=True, paused=False, stopped=False,
-                        context_uri=self.now_playing.context_uri,
-                        track_name=self.now_playing.track_name,
-                        track_artist=self.now_playing.track_artist,
-                        track_album=self.now_playing.track_album,
-                        track_cover=self.now_playing.track_cover,
-                        position=self.now_playing.position,
-                        duration=self.now_playing.duration,
-                    )
                     threading.Thread(target=self.api.resume, daemon=True).start()
                 elif not self._is_item_playing(item):
                     logger.info(f'PlayTimer starting for: {item.name} (index={target_index})')
@@ -1052,33 +971,15 @@ class Berry:
         
         if self.now_playing.playing:
             logger.info('Pausing...')
+            self._optimistic_playing = False  # Immediate visual feedback
             self._play_in_progress = False  # Clear any pending play state
-            # Update UI immediately (optimistic update)
-            self.now_playing = NowPlaying(
-                playing=False, paused=True, stopped=False,
-                context_uri=self.now_playing.context_uri,
-                track_name=self.now_playing.track_name,
-                track_artist=self.now_playing.track_artist,
-                track_album=self.now_playing.track_album,
-                track_cover=self.now_playing.track_cover,
-                position=self.now_playing.position,
-                duration=self.now_playing.duration,
-            )
+            self.renderer.invalidate()  # Force redraw with new state
             threading.Thread(target=self.api.pause, daemon=True).start()
         elif self.now_playing.paused:
             logger.info('Resuming...')
+            self._optimistic_playing = True  # Immediate visual feedback
+            self.renderer.invalidate()  # Force redraw with new state
             self.auto_pause.restore_volume_if_needed()
-            # Update UI immediately (optimistic update)
-            self.now_playing = NowPlaying(
-                playing=True, paused=False, stopped=False,
-                context_uri=self.now_playing.context_uri,
-                track_name=self.now_playing.track_name,
-                track_artist=self.now_playing.track_artist,
-                track_album=self.now_playing.track_album,
-                track_cover=self.now_playing.track_cover,
-                position=self.now_playing.position,
-                duration=self.now_playing.duration,
-            )
             threading.Thread(target=self.api.resume, daemon=True).start()
         elif items:
             item = items[self.selected_index]
@@ -1309,8 +1210,6 @@ class Berry:
             self.catalog_manager.load()
             self._update_carousel_max_index()
             self.image_cache.preload_catalog(self.catalog_manager.items)
-            # Cleanup temp images after saving (they're now permanent)
-            self.catalog_manager.cleanup_temp_images()
             self.temp_item = None
             self.renderer.invalidate()
         
@@ -1439,6 +1338,19 @@ class Berry:
         except Exception as e:
             logger.warning(f'Could not save progress on shutdown: {e}')
     
+    def _collect_cover_async(self, context_uri: str, cover_url: str):
+        """Collect playlist cover in background thread."""
+        try:
+            new_cover_added = self.catalog_manager.collect_cover_for_playlist(
+                context_uri, cover_url
+            )
+            if new_cover_added:
+                # Schedule UI update on next frame (thread-safe)
+                self._update_temp_item()
+                self.renderer.invalidate()
+        except Exception as e:
+            logger.debug(f'Cover collection failed: {e}')
+    
     def _sync_to_playing(self):
         """Sync carousel to currently playing item."""
         items = self.display_items
@@ -1512,6 +1424,11 @@ class Berry:
             self.play_timer.item is not None
         )
         
+        # Reset pressed button state after 150ms
+        if self._pressed_button and time.time() - self._pressed_time > 0.15:
+            self._pressed_button = None
+            self.renderer.invalidate()
+        
         # Check play timer (only if connected)
         if self.connected or self.mock_mode:
             item_to_play = self.play_timer.check()
@@ -1551,16 +1468,18 @@ class Berry:
             time.time() - self.last_progress_save > PROGRESS_SAVE_INTERVAL):
             self._save_playback_progress()
         
-        # Collect playlist covers and update UI if new cover added
-        if (self.now_playing.playing and 
-            'playlist' in (self.now_playing.context_uri or '')):
-            new_cover_added = self.catalog_manager.collect_cover_for_playlist(
-                self.now_playing.context_uri,
-                self.now_playing.track_cover
-            )
-            if new_cover_added:
-                # Update temp_item with new covers and refresh UI
-                self._update_temp_item()
+        # Collect playlist covers in background (network request, would block UI)
+        # Capture both values atomically to prevent mismatched context/cover
+        np = self.now_playing
+        if (np.playing and 'playlist' in (np.context_uri or '')):
+            context_uri = np.context_uri
+            cover_url = np.track_cover
+            if context_uri and cover_url:
+                threading.Thread(
+                    target=self._collect_cover_async,
+                    args=(context_uri, cover_url),
+                    daemon=True
+                ).start()
         
         # Check sleep
         self.sleep_manager.check_sleep(self.now_playing.playing)
@@ -1574,16 +1493,29 @@ class Berry:
         current_item = self.display_items[self.selected_index] if self.selected_index < len(self.display_items) else None
         current_uri = current_item.uri if current_item else None
         
-        # Check if the currently selected item is actually playing
-        selected_is_playing = (
-            self.now_playing.playing and 
-            current_uri and 
-            self.now_playing.context_uri == current_uri
-        )
-        
-        # Clear play_in_progress when playback has successfully started
-        if selected_is_playing and self._play_in_progress:
+        # Clear play_in_progress when ANY playback has started
+        if self.now_playing.playing and self._play_in_progress:
             self._play_in_progress = False
+        
+        # Clear paused_for_navigation when:
+        # 1. Music starts playing, OR
+        # 2. Carousel settled and no pending play (user stopped interacting)
+        if self._paused_for_navigation:
+            if self.now_playing.playing:
+                logger.debug('Loading: cleared _paused_for_navigation (music playing)')
+                self._paused_for_navigation = False
+                self._paused_context_uri = None
+            elif self.carousel.settled and self.play_timer.item is None and not self._play_in_progress:
+                logger.debug('Loading: cleared _paused_for_navigation (settled, no pending)')
+                self._paused_for_navigation = False
+                self._paused_context_uri = None
+        
+        # If user explicitly paused (optimistic_playing = False), clear loading immediately
+        if self._optimistic_playing is False:
+            self._should_show_loading = False
+            self._loading_start_time = None
+            self._is_loading = False
+            return
         
         # Show loading when:
         # - Paused for navigation (swiped away from playing item)
@@ -1609,6 +1541,19 @@ class Berry:
     
     def _draw(self):
         """Draw the UI."""
+        # Determine what the play button should show:
+        # 1. If user explicitly pressed pause -> show play icon
+        # 2. If loading/pending play -> show pause icon (music is coming)
+        # 3. Otherwise -> use real playing state
+        if self._optimistic_playing is False:
+            display_playing = False  # User pressed pause
+        elif self._should_show_loading:
+            display_playing = True   # Loading = music coming, show pause
+        elif self._optimistic_playing is True:
+            display_playing = True   # User pressed play
+        else:
+            display_playing = self.now_playing.playing  # Real state
+        
         return self.renderer.draw(
             items=self.display_items,
             selected_index=self.selected_index,
@@ -1624,5 +1569,6 @@ class Berry:
             loading=self._is_loading,  # Spinner (with 200ms delay)
             pending_play=self._should_show_loading,  # Play button (immediate)
             needs_setup=self.needs_setup,
+            optimistic_playing=display_playing,  # Immediate play/pause feedback
         )
 

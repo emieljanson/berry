@@ -40,7 +40,7 @@ class LibrespotAPI:
             resp = self.session.post(
                 f'{self.base_url}/player/play',
                 json=body,
-                timeout=5
+                timeout=10  # Longer timeout for slow Pi/network
             )
             if resp.ok:
                 logger.info('Play request sent')

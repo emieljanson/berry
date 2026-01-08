@@ -114,10 +114,7 @@ class ImageCache:
             logger.debug(f'Evicted {len(keys_to_remove)} LRU cached images')
     
     def _get_variant_path(self, image_path: str, size: int, dimmed: bool = False) -> Path:
-        """Get the path to the correct image variant.
-        
-        Handles both new format (hash.png) and old format (timestamp-hash.png).
-        """
+        """Get the path to the correct pre-scaled image variant."""
         if not image_path.startswith('/images/'):
             return None
         
@@ -130,21 +127,12 @@ class ImageCache:
         else:
             suffix = '_dim' if dimmed else ''
         
-        # Try new format first: {hash}{suffix}.png
-        variant_filename = f'{base}{suffix}.png'
-        variant_path = self.images_dir / variant_filename
+        variant_path = self.images_dir / f'{base}{suffix}.png'
         
         if variant_path.exists():
             return variant_path
         
-        # Fall back to original file for old format images (will be slower)
-        # This handles images not yet migrated
-        original_path = self.images_dir / filename
-        if original_path.exists():
-            logger.debug(f'Variant {variant_filename} not found, using original: {filename}')
-            return original_path
-        
-        logger.warning(f'Image not found: {variant_filename} (base={base}, size={size}, dimmed={dimmed})')
+        logger.warning(f'Image not found: {base}{suffix}.png')
         return None
     
     def _load_surface(self, path: Path, cache_key: str) -> pygame.Surface:
