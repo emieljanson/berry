@@ -81,6 +81,16 @@ class CatalogManager:
     # LOADING & SAVING
     # ============================================
     
+    def _image_exists(self, image_path: Optional[str]) -> bool:
+        """Check if an image file exists on disk."""
+        if not image_path:
+            return False
+        # image_path format: "/images/abc12345.png"
+        if image_path.startswith('/images/'):
+            filename = image_path[8:]  # Remove "/images/" prefix
+            return (self.images_path / filename).exists()
+        return False
+    
     def load(self) -> List[CatalogItem]:
         """Load catalog items from disk."""
         if self.mock_mode:
@@ -92,20 +102,27 @@ class CatalogManager:
             if self.catalog_path.exists():
                 data = json.loads(self.catalog_path.read_text())
                 items_data = data.get('items', []) if isinstance(data, dict) else []
-                self._items = [
-                    CatalogItem(
+                self._items = []
+                for item in items_data:
+                    if not isinstance(item, dict) or item.get('type') == 'track':
+                        continue
+                    
+                    # Check if image file exists, clear if not
+                    image_path = item.get('image')
+                    if image_path and not self._image_exists(image_path):
+                        logger.warning(f'Image missing for {item.get("name")}: {image_path}')
+                        image_path = None
+                    
+                    self._items.append(CatalogItem(
                         id=item.get('id', ''),
                         uri=item.get('uri', ''),
                         name=item.get('name', ''),
                         type=item.get('type', 'album'),
                         artist=item.get('artist'),
-                        image=item.get('image'),
+                        image=image_path,
                         images=item.get('images'),
                         current_track=item.get('currentTrack'),
-                    )
-                    for item in items_data
-                    if isinstance(item, dict) and item.get('type') != 'track'
-                ]
+                    ))
                 logger.info(f'Loaded {len(self._items)} items')
             else:
                 logger.warning(f'Catalog not found at {self.catalog_path}')
@@ -525,6 +542,12 @@ class CatalogManager:
         if context_uri in self.playlist_covers:
             return len(self.playlist_covers[context_uri])
         return 0
+    
+    def get_collected_covers(self, context_uri: str) -> Optional[List[str]]:
+        """Get collected cover image paths for a playlist."""
+        if context_uri in self.playlist_covers:
+            return list(self.playlist_covers[context_uri].values())
+        return None
     
     # ============================================
     # SAVE & DELETE

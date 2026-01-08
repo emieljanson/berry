@@ -630,9 +630,9 @@ class Berry:
                 self.renderer.invalidate()
             return
         
-        # Check if in catalog
-        in_catalog = any(item.uri == context_uri for item in self.catalog_manager.items)
-        if in_catalog:
+        # Check if in catalog (with valid image)
+        catalog_item = next((item for item in self.catalog_manager.items if item.uri == context_uri), None)
+        if catalog_item and catalog_item.image:
             if self.temp_item:
                 self.temp_item = None
                 self._update_carousel_max_index()
@@ -646,6 +646,10 @@ class Berry:
         current_cover_count = len(self.temp_item.images or []) if self.temp_item else 0
         new_cover_count = len(collected_covers or [])
         
+        # Check if we need to update
+        current_image = self.temp_item.image if self.temp_item else None
+        track_cover = self.now_playing.track_cover
+        
         needs_update = (
             not self.temp_item or 
             self.temp_item.uri != context_uri or
@@ -653,19 +657,51 @@ class Berry:
         )
         
         if needs_update:
+            # Use existing local image if available, otherwise start download
+            local_image = current_image if current_image and current_image.startswith('/images/') else None
+            
             self.temp_item = CatalogItem(
                 id='temp',
                 uri=context_uri,
                 name=self.now_playing.track_album or ('Playlist' if is_playlist else 'Album'),
                 type='playlist' if is_playlist else 'album',
                 artist=self.now_playing.track_artist,
-                image=self.now_playing.track_cover,
+                image=local_image,
                 images=collected_covers,
                 is_temp=True
             )
             self._update_carousel_max_index()
             self.renderer.invalidate()
             logger.info(f'TempItem: {self.temp_item.name}')
+            
+            # Download cover in background if we don't have a local image
+            if not local_image and track_cover:
+                threading.Thread(
+                    target=self._download_temp_cover_async,
+                    args=(context_uri, track_cover),
+                    daemon=True
+                ).start()
+    
+    def _download_temp_cover_async(self, context_uri: str, cover_url: str):
+        """Download temp item cover in background thread."""
+        try:
+            local_path = self.catalog_manager.download_temp_image(cover_url)
+            if local_path and self.temp_item and self.temp_item.uri == context_uri:
+                # Update temp item with downloaded image
+                self.temp_item = CatalogItem(
+                    id=self.temp_item.id,
+                    uri=self.temp_item.uri,
+                    name=self.temp_item.name,
+                    type=self.temp_item.type,
+                    artist=self.temp_item.artist,
+                    image=local_path,
+                    images=self.temp_item.images,
+                    is_temp=True
+                )
+                self.renderer.invalidate()
+                logger.info(f'TempItem cover downloaded: {local_path}')
+        except Exception as e:
+            logger.debug(f'Temp cover download failed: {e}')
     
     def _handle_events(self):
         """Handle pygame events."""
