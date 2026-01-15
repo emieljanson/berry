@@ -40,7 +40,7 @@ class LibrespotAPI:
             resp = self.session.post(
                 f'{self.base_url}/player/play',
                 json=body,
-                timeout=5
+                timeout=10  # Longer timeout for slow Pi/network
             )
             if resp.ok:
                 logger.info('Play request sent')
@@ -126,4 +126,40 @@ class LibrespotAPI:
             return resp.status_code in (200, 204)
         except requests.RequestException:
             return False
+
+
+class NullLibrespotAPI:
+    """
+    Null object API for mock/test mode.
+    
+    All methods return success but do nothing.
+    Use this instead of if mock_mode checks throughout the code.
+    """
+    
+    def status(self) -> Optional[dict]:
+        return None
+    
+    def play(self, uri: str, skip_to_uri: str = None) -> bool:
+        return True
+    
+    def pause(self) -> bool:
+        return True
+    
+    def resume(self) -> bool:
+        return True
+    
+    def next(self) -> bool:
+        return True
+    
+    def prev(self) -> bool:
+        return True
+    
+    def seek(self, position: int) -> bool:
+        return True
+    
+    def set_volume(self, level: int) -> bool:
+        return True
+    
+    def is_connected(self) -> bool:
+        return True
 

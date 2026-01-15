@@ -19,17 +19,20 @@ DIM='\033[2m'
 NC='\033[0m'
 
 VERBOSE=false
+PROFILE=false
 LOG_PID=""
 
 # Parse arguments
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -v|--verbose) VERBOSE=true ;;
+        -p|--profile) PROFILE=true ;;
         -h|--help) 
-            echo "Usage: ./dev-pi.sh [-v|--verbose]"
+            echo "Usage: ./dev-pi.sh [-v|--verbose] [-p|--profile]"
             echo ""
             echo "Options:"
             echo "  -v, --verbose  Show all logs (INFO + DEBUG)"
+            echo "  -p, --profile  Enable frame profiler (shows render timing)"
             echo ""
             echo "Commands while running:"
             echo "  r, Enter  Sync files and restart app"
@@ -49,6 +52,11 @@ echo ""
 
 if [ "$VERBOSE" = true ]; then
     echo -e "${DIM}(Verbose mode)${NC}"
+fi
+if [ "$PROFILE" = true ]; then
+    echo -e "${DIM}(Profile mode - frame timing enabled)${NC}"
+fi
+if [ "$VERBOSE" = true ] || [ "$PROFILE" = true ]; then
     echo ""
 fi
 
@@ -154,6 +162,10 @@ start_logs() {
                 *"[WARNING]"*)
                     echo -e "${YELLOW}$line${NC}"
                     ;;
+                *"[PROFILER]"*)
+                    # Always show profiler output (cyan/bold)
+                    echo -e "${CYAN}$line${NC}"
+                    ;;
                 *"[INFO]"*)
                     # Only show important actions
                     case "$line" in
@@ -163,7 +175,8 @@ start_logs() {
                         *"Volume"*|*"Sleep"*|*"Wake"*|*"WAKE"*|\
                         *"Connected"*|*"CONNECTION"*|*"Disconnected"*|\
                         *"SIGTERM"*|*"SIGINT"*|*"shutting down"*|*"Shutdown"*|\
-                        *"TempItem"*|*"Syncing"*|*"Context"*)
+                        *"TempItem"*|*"Syncing"*|*"Context"*|\
+                        *"profiler"*|*"PROFILER"*|*"GPU"*|*"SOFTWARE"*)
                             echo -e "${CYAN}$line${NC}"
                             ;;
                     esac
@@ -184,6 +197,13 @@ echo ""
 
 # Start/setup services on Pi
 echo -e "${BLUE}🚀 Starting Berry...${NC}"
+
+# Create systemd override for profile mode
+if [ "$PROFILE" = true ]; then
+    ssh $PI_HOST "sudo mkdir -p /etc/systemd/system/berry-native.service.d && echo -e '[Service]\nEnvironment=BERRY_PROFILE=1' | sudo tee /etc/systemd/system/berry-native.service.d/profile.conf > /dev/null"
+else
+    ssh $PI_HOST "sudo rm -f /etc/systemd/system/berry-native.service.d/profile.conf 2>/dev/null; true"
+fi
 
 ssh -t $PI_HOST << 'ENDSSH'
 # Ensure systemd services are linked

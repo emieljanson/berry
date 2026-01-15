@@ -2,6 +2,7 @@
 Description=Berry go-librespot Spotify Connect
 After=network-online.target sound.target
 Wants=network-online.target
+PartOf=berry-native.service
 
 [Service]
 Type=simple
