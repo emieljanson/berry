@@ -11,8 +11,11 @@ consoleblank=0
 # Display: Raspberry Pi Touch Display 2 (5")
 # ============================================
 # Disable auto-detect to use specific overlay with rotation
-#display_auto_detect=1
-
-# Use the ILI9881 5" overlay with 90° rotation (landscape mode)
+#display_auto_detect=1# Use the ILI9881 5" overlay with 90° rotation (landscape mode)
 # This enables hardware rotation - zero CPU overhead
 dtoverlay=vc4-kms-dsi-ili9881-5inch,rotation=90
+
+# ============================================
+# Audio: WM8960 Audio HAT
+# ============================================
+dtoverlay=wm8960-soundcard

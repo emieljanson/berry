@@ -111,10 +111,12 @@ PROGRESS_BAR_WIDTH = 8
 # VOLUME
 # ============================================
 
+# Volume levels with separate speaker/headphone values
+# Speaker needs higher gain, headphones need lower to avoid being too loud
 VOLUME_LEVELS = [
-    {'level': 60, 'icon': 'volume_none'},
-    {'level': 70, 'icon': 'volume_low'},
-    {'level': 80, 'icon': 'volume_high'},
+    {'speaker': 88, 'headphone': 70, 'icon': 'volume_none'},
+    {'speaker': 94, 'headphone': 60, 'icon': 'volume_low'},
+    {'speaker': 98, 'headphone': 80, 'icon': 'volume_high'},
 ]
 
 # ============================================

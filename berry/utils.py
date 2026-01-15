@@ -14,13 +14,26 @@ def run_async(fn, *args):
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
-def set_system_volume(level: int):
-    """Set the Pi's ALSA system volume (0-100)."""
+def set_system_volume(speaker_level: int, headphone_level: int):
+    """Set the Pi's ALSA system volume for speaker and headphone separately."""
     if sys.platform != 'linux':
         return
     try:
+        # WM8960 Audio HAT on card 2
+        # Playback = master DAC volume, keep at 100%
+        # Speaker/Headphone = amplifier volumes, set independently
         subprocess.run(
-            ['amixer', 'set', 'PCM', f'{level}%'],
+            ['amixer', '-c', '2', 'set', 'Playback', '100%'],
+            capture_output=True,
+            check=True
+        )
+        subprocess.run(
+            ['amixer', '-c', '2', 'set', 'Speaker', f'{speaker_level}%'],
+            capture_output=True,
+            check=True
+        )
+        subprocess.run(
+            ['amixer', '-c', '2', 'set', 'Headphone', f'{headphone_level}%'],
             capture_output=True,
             check=True
         )

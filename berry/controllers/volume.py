@@ -33,9 +33,14 @@ class VolumeController:
         self._spotify_initialized = False  # Set Spotify to 100% on first play
     
     @property
-    def level(self) -> int:
-        """Current volume level (0-100)."""
-        return VOLUME_LEVELS[self.index]['level']
+    def speaker_level(self) -> int:
+        """Current speaker volume level (0-100)."""
+        return VOLUME_LEVELS[self.index]['speaker']
+    
+    @property
+    def headphone_level(self) -> int:
+        """Current headphone volume level (0-100)."""
+        return VOLUME_LEVELS[self.index]['headphone']
     
     @property
     def icon(self) -> str:
@@ -44,7 +49,7 @@ class VolumeController:
     
     def init(self):
         """Initialize system volume at startup."""
-        set_system_volume(self.level)
+        set_system_volume(self.speaker_level, self.headphone_level)
         self.mode = 'berry'
     
     def toggle(self):
@@ -61,8 +66,8 @@ class VolumeController:
         self.index = (self.index + 1) % len(VOLUME_LEVELS)
         self._berry_index = self.index
         
-        logger.info(f'Volume: {self.level}%')
-        run_async(set_system_volume, self.level)
+        logger.info(f'Volume: speaker={self.speaker_level}%, headphone={self.headphone_level}%')
+        run_async(set_system_volume, self.speaker_level, self.headphone_level)
     
     def handle_spotify_change(self, spotify_volume: int):
         """Handle volume changes from Spotify (ownership model)."""
@@ -75,7 +80,7 @@ class VolumeController:
             if spotify_volume < 95:
                 logger.info(f'Volume: Spotify took control ({spotify_volume}%)')
                 self.mode = 'spotify'
-                set_system_volume(100)  # Pi to 100%, Spotify controls
+                set_system_volume(100, 100)  # Pi to 100%, Spotify controls
                 self.index = len(VOLUME_LEVELS) - 1  # Show max icon
         else:
             # In Spotify mode, if volume back to ~100% -> switch back to Berry
@@ -106,7 +111,7 @@ class VolumeController:
         
         self.mode = 'berry'
         self.index = self._berry_index
-        set_system_volume(self.level)
+        set_system_volume(self.speaker_level, self.headphone_level)
         run_async(self._reset_spotify_volume)
     
     def _reset_spotify_volume(self):
