@@ -17,17 +17,19 @@ from .config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, COLORS,
     LIBRESPOT_URL, LIBRESPOT_WS, 
     CATALOG_PATH, IMAGES_DIR, ICONS_DIR,
-    MOCK_MODE, VOLUME_LEVELS,
+    MOCK_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
     CAROUSEL_X, CAROUSEL_Y, CAROUSEL_CENTER_Y, CONTROLS_X, CONTROLS_Y, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
     PROGRESS_SAVE_INTERVAL,
     has_spotify_credentials,
 )
-from .models import CatalogItem, NowPlaying
-from .api import LibrespotAPI, CatalogManager
+from .models import CatalogItem, NowPlaying, PlayState
+from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager
-from .ui import ImageCache, Renderer
+from .controllers import VolumeController
+from .ui import ImageCache, Renderer, RenderContext
+from .utils import run_async
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +140,8 @@ class Berry:
         # Mock mode
         self.mock_mode = MOCK_MODE
         
-        # API & Catalog
-        self.api = LibrespotAPI(LIBRESPOT_URL)
+        # API & Catalog (use NullAPI in mock mode)
+        self.api = NullLibrespotAPI() if self.mock_mode else LibrespotAPI(LIBRESPOT_URL)
         self.catalog_manager = CatalogManager(CATALOG_PATH, IMAGES_DIR, mock_mode=self.mock_mode)
         self.catalog_manager.load()
         
@@ -161,9 +163,10 @@ class Berry:
         self.carousel = SmoothCarousel()
         self.play_timer = PlayTimer()
         self.perf_monitor = PerformanceMonitor()
+        self.volume = VolumeController(self.api)
         self.auto_pause = AutoPauseManager(
-            on_pause=lambda: threading.Thread(target=self.api.pause, daemon=True).start(),
-            get_volume=lambda: VOLUME_LEVELS[self.volume_index]['level']
+            on_pause=lambda: run_async(self.api.pause),
+            get_volume=lambda: self.volume.level
         )
         
         # State (with thread-safe now_playing and connected)
@@ -187,13 +190,6 @@ class Berry:
         self.saving = False
         self.deleting = False
         
-        # Volume state with ownership model
-        # 'berry': Spotify at 100%, Pi controls volume
-        # 'spotify': Pi at 100%, Spotify controls volume
-        self._volume_mode = 'berry'
-        self.volume_index = 1  # Start at 'normal' (55%)
-        self._berry_volume_index = 1  # Remember Berry's choice when in Spotify mode
-        self._spotify_volume_initialized = False  # Set Spotify to 100% on first play
         
         # Interaction tracking
         self.user_interacting = False
@@ -211,19 +207,15 @@ class Berry:
         # Navigation pause state (pause when swiping away from playing item)
         self._paused_for_navigation = False
         self._paused_context_uri: Optional[str] = None
-        self._loading_start_time: Optional[float] = None
-        self._is_loading: bool = False
-        self._should_show_loading: bool = False
+        
+        # Unified play/loading state for UI feedback
+        self.play_state = PlayState()
         
         # Button debouncing and feedback
         self._last_action_time = 0
         self._action_debounce = 0.3  # 300ms between button actions
         self._pressed_button: Optional[str] = None  # 'play', 'prev', 'next', 'volume'
         self._pressed_time = 0
-        self._volume_change_time = 0  # Track local volume changes for sync cooldown
-        
-        # Optimistic UI state - immediate visual feedback on play/pause
-        self._optimistic_playing: Optional[bool] = None  # None = use real state
         
         # Audio feedback (click sound)
         self._click_sound = self._create_click_sound()
@@ -333,7 +325,7 @@ class Berry:
         self.connected = True
         self.needs_refresh = True
         # Force immediate status refresh
-        threading.Thread(target=self._refresh_status, daemon=True).start()
+        run_async(self._refresh_status)
     
     @property
     def display_items(self) -> List[CatalogItem]:
@@ -392,15 +384,15 @@ class Berry:
             self.events.start()
             self.catalog_manager.cleanup_unused_images()
             
-            # Set Spotify volume to 100% once at startup (we control volume via system audio)
-            self._init_volume()  # Set system volume (no thread needed)
+            # Set system volume at startup
+            self.volume.init()
             
             # Start status polling
-            threading.Thread(target=self._poll_status, daemon=True).start()
+            run_async(self._poll_status)
             logger.info(f'Polling {LIBRESPOT_URL}')
             
             # Force initial connection check (don't wait for first poll interval)
-            threading.Thread(target=self._initial_connect, daemon=True).start()
+            run_async(self._initial_connect)
         else:
             logger.info('Running in MOCK MODE')
         
@@ -434,7 +426,7 @@ class Berry:
             # - 10 FPS: music playing (progress bar updates)
             # - 5 FPS: idle (fully static screen)
             is_animating = not self.carousel.settled or self.touch.dragging
-            if is_animating or self._is_loading:
+            if is_animating or self.play_state.is_loading:
                 target_fps = 60  # Smooth animations and spinner
             elif self.now_playing.playing:
                 target_fps = 10
@@ -459,26 +451,16 @@ class Berry:
                 
                 # Determine current target FPS for warning threshold
                 log_is_animating = not self.carousel.settled or self.touch.dragging
-                if log_is_animating or self._is_loading:
+                if log_is_animating or self.play_state.is_loading:
                     log_target_fps = 60
                 elif self.now_playing.playing:
                     log_target_fps = 10
                 else:
                     log_target_fps = 5
                 
-                # Show loading reasons if loading
-                if self._is_loading:
-                    reasons = []
-                    if self._paused_for_navigation:
-                        reasons.append('paused_nav')
-                    if self.play_timer.item:
-                        reasons.append(f'timer:{self.play_timer.item.name[:15]}')
-                    if self._play_in_progress:
-                        reasons.append('play_req')
-                    reason_str = ','.join(reasons) if reasons else '?'
-                    logger.info(f'FPS: {avg_fps:.1f} | connected={self.connected} | playing={self.now_playing.playing} | loading={self._is_loading} ({reason_str}) | target={log_target_fps}')
-                else:
-                    logger.info(f'FPS: {avg_fps:.1f} | connected={self.connected} | playing={self.now_playing.playing} | loading={self._is_loading} | target={log_target_fps}')
+                # Log FPS status
+                is_loading = self.play_state.is_loading
+                logger.info(f'FPS: {avg_fps:.1f} | connected={self.connected} | playing={self.now_playing.playing} | loading={is_loading} | target={log_target_fps}')
                 
                 # Warn if FPS is significantly below target:
                 # - Target 60 FPS (animations): warn if < 30 FPS (50% below)
@@ -572,13 +554,13 @@ class Berry:
                 duration=track.get('duration', 0),
             )
             
-            # Clear optimistic state - real data received
-            self._optimistic_playing = None
+            # Clear pending state - real data received
+            self.play_state.clear()
             
             # Handle volume ownership
             spotify_volume = status.get('volume')
             if spotify_volume is not None:
-                self._handle_spotify_volume_change(spotify_volume)
+                self.volume.handle_spotify_change(spotify_volume)
             
             # Update tempItem
             self._update_temp_item()
@@ -894,7 +876,7 @@ class Berry:
             # Prev: Y = center_y - btn_spacing (485)
             if center_y - btn_spacing - BTN_SIZE <= y <= center_y - btn_spacing + BTN_SIZE:
                 button_pressed = 'prev'
-                threading.Thread(target=self.api.prev, daemon=True).start()
+                run_async(self.api.prev)
             # Play: Y = center_y (640)
             elif center_y - PLAY_BTN_SIZE <= y <= center_y + PLAY_BTN_SIZE:
                 button_pressed = 'play'
@@ -902,11 +884,11 @@ class Berry:
             # Next: Y = center_y + btn_spacing (795)
             elif center_y + btn_spacing - BTN_SIZE <= y <= center_y + btn_spacing + BTN_SIZE:
                 button_pressed = 'next'
-                threading.Thread(target=self.api.next, daemon=True).start()
+                run_async(self.api.next)
             # Volume: Y = vol_y (~1173)
             elif vol_y - BTN_SIZE <= y <= vol_y + BTN_SIZE:
                 button_pressed = 'volume'
-                self._toggle_volume()
+                self.volume.toggle()
             
             if button_pressed:
                 logger.info(f'Button press: {button_pressed}')
@@ -938,7 +920,7 @@ class Berry:
                     logger.info('Pausing for navigation...')
                     self._paused_for_navigation = True
                     self._paused_context_uri = self.now_playing.context_uri
-                    threading.Thread(target=self.api.pause, daemon=True).start()
+                    run_async(self.api.pause)
             
             item = items[target_index]
             logger.debug(f'Snap: {old_index} -> {target_index}, item={item.name}')
@@ -951,7 +933,7 @@ class Berry:
                     self._paused_for_navigation = False
                     self._paused_context_uri = None
                     self.play_timer.cancel()
-                    threading.Thread(target=self.api.resume, daemon=True).start()
+                    run_async(self.api.resume)
                 elif not self._is_item_playing(item):
                     logger.info(f'PlayTimer starting for: {item.name} (index={target_index})')
                     self.play_timer.start(item)
@@ -1007,16 +989,16 @@ class Berry:
         
         if self.now_playing.playing:
             logger.info('Pausing...')
-            self._optimistic_playing = False  # Immediate visual feedback
-            self._play_in_progress = False  # Clear any pending play state
-            self.renderer.invalidate()  # Force redraw with new state
-            threading.Thread(target=self.api.pause, daemon=True).start()
+            self.play_state.set_pending('pause')
+            self._play_in_progress = False
+            self.renderer.invalidate()
+            run_async(self.api.pause)
         elif self.now_playing.paused:
             logger.info('Resuming...')
-            self._optimistic_playing = True  # Immediate visual feedback
-            self.renderer.invalidate()  # Force redraw with new state
+            self.play_state.set_pending('play')
+            self.renderer.invalidate()
             self.auto_pause.restore_volume_if_needed()
-            threading.Thread(target=self.api.resume, daemon=True).start()
+            run_async(self.api.resume)
         elif items:
             item = items[self.selected_index]
             logger.info(f'Playing {item.name}')
@@ -1052,10 +1034,7 @@ class Berry:
         logger.info(f'Execute play: context_uri={uri[:50]}..., from_beginning={from_beginning}')
         try:
             # Set Spotify volume to 100% on first play
-            if not self._spotify_volume_initialized:
-                self._spotify_volume_initialized = True
-                if self.api.set_volume(100):
-                    logger.info('Spotify volume set to 100%')
+            self.volume.ensure_spotify_at_100()
             
             # Check for saved progress
             skip_to_uri = None
@@ -1099,30 +1078,6 @@ class Berry:
                 logger.debug(f'Executing queued request: {pending[0]}')
                 self._play_item(pending[0], pending[1])
     
-    def _init_volume(self):
-        """Initialize system volume at startup."""
-        level = VOLUME_LEVELS[self.volume_index]['level']
-        self._set_system_volume(level)
-        self._volume_mode = 'berry'
-    
-    def _switch_to_berry_mode(self, force: bool = False):
-        """Switch to Berry mode: Spotify at 100%, Pi controls volume."""
-        if self._volume_mode == 'berry' and not force:
-            return
-        
-        if self._volume_mode != 'berry':
-            logger.info('Volume: switching to Berry mode')
-        
-        self._volume_mode = 'berry'
-        
-        # Restore Berry's volume choice
-        self.volume_index = self._berry_volume_index
-        level = VOLUME_LEVELS[self.volume_index]['level']
-        self._set_system_volume(level)
-        
-        # Reset Spotify to 100% (async)
-        threading.Thread(target=self._reset_spotify_volume, daemon=True).start()
-    
     def _on_wake(self):
         """Called when waking from sleep - reconnect and reset state."""
         logger.info('=' * 40)
@@ -1130,7 +1085,7 @@ class Berry:
         logger.info(f'  Connection state: {self.connected}')
         logger.info(f'  Fail count: {self._connection_fail_count}')
         logger.info(f'  Playing: {self.now_playing.playing}')
-        logger.info(f'  Volume mode: {self._volume_mode}')
+        logger.info(f'  Volume mode: {self.volume.mode}')
         
         # Reset connection state for immediate reconnect
         self._connection_fail_count = 0
@@ -1150,11 +1105,10 @@ class Berry:
                 logger.info('WAKE UP FAILED')
                 logger.info('=' * 40)
         
-        threading.Thread(target=wake_refresh, daemon=True).start()
+        run_async(wake_refresh)
         
         # Reset to Berry mode on wake for clean state
-        if self._volume_mode == 'spotify':
-            self._switch_to_berry_mode()
+        self.volume.on_wake()
     
     def _initial_connect(self):
         """Force initial connection check at startup."""
@@ -1164,65 +1118,6 @@ class Berry:
                 logger.info('Connected to librespot')
         except Exception as e:
             logger.warning(f'Initial connection failed: {e}')
-    
-    def _reset_spotify_volume(self):
-        """Reset Spotify to 100% (called when taking back control)."""
-        try:
-            self.api.set_volume(100)
-        except Exception:
-            pass  # Best effort
-    
-    def _toggle_volume(self):
-        """Toggle between volume levels - switches to Berry mode if needed."""
-        # Track that we're making a local change
-        self._volume_change_time = time.time()
-        
-        # If in Spotify mode, switch back to Berry mode
-        if self._volume_mode == 'spotify':
-            logger.info('Volume: taking back control from Spotify')
-            self._volume_mode = 'berry'
-            threading.Thread(target=self._reset_spotify_volume, daemon=True).start()
-        
-        # Cycle through volume levels
-        self.volume_index = (self.volume_index + 1) % len(VOLUME_LEVELS)
-        self._berry_volume_index = self.volume_index  # Remember choice
-        level = VOLUME_LEVELS[self.volume_index]['level']
-        
-        logger.info(f'Volume: {level}%')
-        threading.Thread(target=self._set_system_volume, args=(level,), daemon=True).start()
-    
-    def _set_system_volume(self, level: int):
-        """Set the Pi's ALSA system volume."""
-        if sys.platform != 'linux':
-            return
-        try:
-            subprocess.run(['amixer', 'set', 'PCM', f'{level}%'],
-                          capture_output=True, check=True)
-        except (subprocess.SubprocessError, FileNotFoundError) as e:
-            logger.debug(f'Could not set system volume: {e}')  # Not critical on non-Pi systems
-        except Exception as e:
-            logger.warning(f'Unexpected error setting system volume: {e}', exc_info=True)
-    
-    def _handle_spotify_volume_change(self, spotify_volume: int):
-        """Handle volume changes from Spotify (ownership model)."""
-        # Skip if we just made a local change
-        if time.time() - self._volume_change_time < 2.0:
-            return
-        
-        if self._volume_mode == 'berry':
-            # We're in Berry mode - Spotify should be at 100%
-            if spotify_volume < 95:
-                # Remote user changed volume -> switch to Spotify mode
-                logger.info(f'Volume: Spotify took control ({spotify_volume}%)')
-                self._volume_mode = 'spotify'
-                self._set_system_volume(100)  # Pi to 100%, Spotify controls
-                # Update icon to show max (since Pi is at 100%)
-                self.volume_index = len(VOLUME_LEVELS) - 1
-        else:
-            # We're in Spotify mode
-            if spotify_volume >= 95:
-                # User set Spotify back to ~100% -> switch back to Berry mode
-                self._switch_to_berry_mode()
     
     def _save_temp_item(self):
         """Save the current temp item to catalog."""
@@ -1477,7 +1372,7 @@ class Berry:
                     logger.info(f'  -> Resuming (paused for nav)')
                     self._paused_for_navigation = False
                     self._paused_context_uri = None
-                    threading.Thread(target=self.api.resume, daemon=True).start()
+                    run_async(self.api.resume)
                 else:
                     # New item, play it
                     logger.info(f'  -> Auto-playing NEW')
@@ -1524,73 +1419,40 @@ class Berry:
         self._update_loading_state()
     
     def _update_loading_state(self):
-        """Calculate loading state for spinner display."""
-        # Get current selected item
-        current_item = self.display_items[self.selected_index] if self.selected_index < len(self.display_items) else None
-        current_uri = current_item.uri if current_item else None
-        
-        # Clear play_in_progress when ANY playback has started
+        """Update loading state for spinner display."""
+        # Clear play_in_progress when playback has started
         if self.now_playing.playing and self._play_in_progress:
             self._play_in_progress = False
         
-        # Clear paused_for_navigation when:
-        # 1. Music starts playing, OR
-        # 2. Carousel settled and no pending play (user stopped interacting)
+        # Clear paused_for_navigation when music starts or user stops interacting
         if self._paused_for_navigation:
             if self.now_playing.playing:
-                logger.debug('Loading: cleared _paused_for_navigation (music playing)')
                 self._paused_for_navigation = False
                 self._paused_context_uri = None
             elif self.carousel.settled and self.play_timer.item is None and not self._play_in_progress:
-                logger.debug('Loading: cleared _paused_for_navigation (settled, no pending)')
                 self._paused_for_navigation = False
                 self._paused_context_uri = None
         
-        # If user explicitly paused (optimistic_playing = False), clear loading immediately
-        if self._optimistic_playing is False:
-            self._should_show_loading = False
-            self._loading_start_time = None
-            self._is_loading = False
+        # If user explicitly paused, stop loading
+        if self.play_state.pending_action == 'pause':
+            self.play_state.stop_loading()
             return
         
-        # Show loading when:
-        # - Paused for navigation (swiped away from playing item)
-        # - Play timer running (about to auto-play)
-        # - Play request in progress (waiting for playback to start)
-        self._should_show_loading = (
+        # Start/stop loading based on pending operations
+        should_load = (
             self._paused_for_navigation or 
             self.play_timer.item is not None or 
             self._play_in_progress
         )
         
-        # Track loading start time for 200ms delay
-        if self._should_show_loading:
-            if self._loading_start_time is None:
-                self._loading_start_time = time.time()
+        if should_load:
+            self.play_state.start_loading()
         else:
-            self._loading_start_time = None
-        
-        # Only show spinner after 200ms delay to avoid flicker
-        self._is_loading = (self._should_show_loading and 
-                           self._loading_start_time is not None and
-                           time.time() - self._loading_start_time > 0.2)
+            self.play_state.stop_loading()
     
     def _draw(self):
         """Draw the UI."""
-        # Determine what the play button should show:
-        # 1. If user explicitly pressed pause -> show play icon
-        # 2. If loading/pending play -> show pause icon (music is coming)
-        # 3. Otherwise -> use real playing state
-        if self._optimistic_playing is False:
-            display_playing = False  # User pressed pause
-        elif self._should_show_loading:
-            display_playing = True   # Loading = music coming, show pause
-        elif self._optimistic_playing is True:
-            display_playing = True   # User pressed play
-        else:
-            display_playing = self.now_playing.playing  # Real state
-        
-        return self.renderer.draw(
+        ctx = RenderContext(
             items=self.display_items,
             selected_index=self.selected_index,
             now_playing=self.now_playing,
@@ -1599,12 +1461,12 @@ class Berry:
             dragging=self.touch.dragging,
             is_sleeping=self.sleep_manager.is_sleeping,
             connected=self.connected,
-            volume_index=self.volume_index,
+            volume_index=self.volume.index,
             delete_mode_id=self.delete_mode_id,
             pressed_button=self._pressed_button,
-            loading=self._is_loading,  # Spinner (with 200ms delay)
-            pending_play=self._should_show_loading,  # Play button (immediate)
+            is_loading=self.play_state.is_loading,
+            is_playing=self.play_state.display_playing(self.now_playing.playing),
             needs_setup=self.needs_setup,
-            optimistic_playing=display_playing,  # Immediate play/pause feedback
         )
+        return self.renderer.draw(ctx)
 

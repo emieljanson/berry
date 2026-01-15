@@ -7,11 +7,10 @@ After 30 minutes of continuous play in the same context, fades out and pauses.
 import time
 import logging
 import threading
-import subprocess
-import sys
 from typing import Optional, Callable
 
 from ..config import AUTO_PAUSE_TIMEOUT, AUTO_PAUSE_FADE_DURATION
+from ..utils import set_system_volume
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +85,7 @@ class AutoPauseManager:
         """Restore volume after auto-pause (call when user resumes)."""
         if self._should_restore_volume:
             logger.info(f'Auto-pause: restoring volume to {self._original_volume}%')
-            self._set_system_volume(self._original_volume)
+            set_system_volume(self._original_volume)
             self._should_restore_volume = False
     
     def _reset(self):
@@ -113,7 +112,7 @@ class AutoPauseManager:
             new_volume = int(self._original_volume * (1 - progress))
             new_volume = max(0, new_volume)
             
-            self._set_system_volume(new_volume)
+            set_system_volume(new_volume)
             time.sleep(step_duration)
         
         # Pause playback
@@ -122,25 +121,10 @@ class AutoPauseManager:
         
         # Restore volume (so next play is at normal level)
         time.sleep(0.5)
-        self._set_system_volume(self._original_volume)
+        set_system_volume(self._original_volume)
         self._should_restore_volume = False  # Already restored
         
         # Reset state
         self._reset()
         logger.info('Auto-pause: complete, volume restored')
-    
-    def _set_system_volume(self, level: int):
-        """Set the Pi's ALSA system volume."""
-        if sys.platform != 'linux':
-            return
-        try:
-            subprocess.run(
-                ['amixer', 'set', 'PCM', f'{level}%'],
-                capture_output=True, 
-                check=True
-            )
-        except (subprocess.SubprocessError, FileNotFoundError) as e:
-            logger.debug(f'Could not set system volume: {e}')
-        except Exception as e:
-            logger.warning(f'Unexpected error setting system volume: {e}', exc_info=True)
 

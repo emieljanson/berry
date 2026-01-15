@@ -11,6 +11,7 @@ import pygame.gfxdraw
 
 from .helpers import draw_aa_circle, draw_aa_rounded_rect
 from .image_cache import ImageCache
+from .context import RenderContext
 from ..models import CatalogItem, NowPlaying
 from ..config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, COLORS,
@@ -73,41 +74,23 @@ class Renderer:
         """Force a full redraw on next frame."""
         self._needs_full_redraw = True
     
-    def draw(self, 
-             items: List[CatalogItem],
-             selected_index: int,
-             now_playing: NowPlaying,
-             scroll_x: float,
-             drag_offset: float,
-             dragging: bool,
-             is_sleeping: bool,
-             connected: bool,
-             volume_index: int,
-             delete_mode_id: Optional[str] = None,
-             pressed_button: Optional[str] = None,
-             loading: bool = False,
-             pending_play: bool = False,
-             needs_setup: bool = False,
-             optimistic_playing: Optional[bool] = None) -> Optional[List[pygame.Rect]]:
+    def draw(self, ctx: RenderContext) -> Optional[List[pygame.Rect]]:
         """
         Main draw method.
         
         Args:
-            loading: If True, show spinner (has 200ms delay to avoid flicker)
-            pending_play: If True, show pause icon (immediate, no delay)
-            needs_setup: If True, show Spotify setup instructions
-            optimistic_playing: Immediate play/pause state (None = use now_playing.playing)
+            ctx: RenderContext with all state needed to render
         
         Returns list of dirty rects for partial update, or None for full flip.
         """
         # Sleep mode - show black screen only
-        if is_sleeping:
+        if ctx.is_sleeping:
             self.screen.fill((0, 0, 0))
             self._needs_full_redraw = True
             return None
         
         # Setup mode - show Spotify connect instructions
-        if needs_setup:
+        if ctx.needs_setup:
             self._draw_background()
             self._draw_setup_screen()
             self._needs_full_redraw = True
@@ -118,12 +101,12 @@ class Renderer:
         self.delete_button_rect = None
         
         # Get current item to check track info
-        current_item = items[selected_index] if selected_index < len(items) else None
+        current_item = ctx.items[ctx.selected_index] if ctx.selected_index < len(ctx.items) else None
         
         # Determine current track key (same logic as _draw_track_info)
         if current_item:
-            if now_playing.context_uri == current_item.uri and now_playing.track_name:
-                current_track_key = (now_playing.track_name, now_playing.track_artist or '')
+            if ctx.now_playing.context_uri == current_item.uri and ctx.now_playing.track_name:
+                current_track_key = (ctx.now_playing.track_name, ctx.now_playing.track_artist or '')
             elif current_item.current_track and isinstance(current_item.current_track, dict):
                 name = current_item.current_track.get('name', current_item.name) or current_item.name
                 artist = current_item.current_track.get('artist', current_item.artist or '') or current_item.artist or ''
@@ -135,52 +118,50 @@ class Renderer:
         
         # Check if we need a full redraw
         state_changed = (
-            self._last_playing_state != now_playing.playing or
-            self._last_selected_index != selected_index or
+            self._last_playing_state != ctx.now_playing.playing or
+            self._last_selected_index != ctx.selected_index or
             self._last_track_key is None or
             self._last_track_key != current_track_key
         )
         
         if state_changed:
             self._needs_full_redraw = True
-            self._last_playing_state = now_playing.playing
-            self._last_selected_index = selected_index
+            self._last_playing_state = ctx.now_playing.playing
+            self._last_selected_index = ctx.selected_index
         
         # Disconnected state
-        if not connected:
+        if not ctx.connected:
             self._draw_background()
             self._draw_disconnected()
             self._needs_full_redraw = True
             return None
         
         # Empty state
-        if not items:
+        if not ctx.items:
             self._draw_background()
             self._draw_empty_state()
             self._needs_full_redraw = True
             return None
         
         # Calculate effective scroll position
-        if dragging:
-            drag_index_offset = -drag_offset / (COVER_SIZE + COVER_SPACING)
-            effective_scroll = selected_index + drag_index_offset
+        if ctx.dragging:
+            drag_index_offset = -ctx.drag_offset / (COVER_SIZE + COVER_SPACING)
+            effective_scroll = ctx.selected_index + drag_index_offset
         else:
-            effective_scroll = scroll_x
+            effective_scroll = ctx.scroll_x
         
         # Determine if animating
-        is_animating = dragging or abs(scroll_x - selected_index) > 0.01
+        is_animating = ctx.dragging or abs(ctx.scroll_x - ctx.selected_index) > 0.01
         
         if self._needs_full_redraw:
             # Full redraw
             self._draw_background()
             self._mark('draw_bg')
             
-            self._draw_track_info(current_item, now_playing)
+            self._draw_track_info(current_item, ctx.now_playing)
             self._mark('draw_track')
             
-            # Use optimistic state for immediate visual feedback
-            show_as_playing = optimistic_playing if optimistic_playing is not None else now_playing.playing
-            self._draw_controls(show_as_playing, volume_index, pressed_button)
+            self._draw_controls(ctx.is_playing, ctx.volume_index, ctx.pressed_button)
             self._mark('draw_controls')
             
             # Cache static parts
@@ -190,7 +171,7 @@ class Renderer:
             self._mark('cache_static')
             
             # Draw carousel
-            self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id, loading)
+            self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
             self._mark('draw_carousel')
             
             self._needs_full_redraw = False
@@ -203,19 +184,19 @@ class Renderer:
                            self._carousel_rect)
             self._mark('blit_static')
             
-            self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id, loading)
+            self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
             self._mark('draw_carousel')
             return [self._carousel_rect]
         
         else:
             # Idle - update progress bar if playing
-            if now_playing.playing or loading:
+            if ctx.now_playing.playing or ctx.is_loading:
                 self.screen.blit(self._static_layer,
                                self._carousel_rect.topleft,
                                self._carousel_rect)
                 self._mark('blit_static')
                 
-                self._draw_carousel(items, effective_scroll, now_playing, delete_mode_id, loading)
+                self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
                 self._mark('draw_carousel')
                 return [self._carousel_rect]
             return []

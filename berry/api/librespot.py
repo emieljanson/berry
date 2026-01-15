@@ -127,3 +127,39 @@ class LibrespotAPI:
         except requests.RequestException:
             return False
 
+
+class NullLibrespotAPI:
+    """
+    Null object API for mock/test mode.
+    
+    All methods return success but do nothing.
+    Use this instead of if mock_mode checks throughout the code.
+    """
+    
+    def status(self) -> Optional[dict]:
+        return None
+    
+    def play(self, uri: str, skip_to_uri: str = None) -> bool:
+        return True
+    
+    def pause(self) -> bool:
+        return True
+    
+    def resume(self) -> bool:
+        return True
+    
+    def next(self) -> bool:
+        return True
+    
+    def prev(self) -> bool:
+        return True
+    
+    def seek(self, position: int) -> bool:
+        return True
+    
+    def set_volume(self, level: int) -> bool:
+        return True
+    
+    def is_connected(self) -> bool:
+        return True
+

@@ -16,4 +16,3 @@ consoleblank=0
 # Use the ILI9881 5" overlay with 90° rotation (landscape mode)
 # This enables hardware rotation - zero CPU overhead
 dtoverlay=vc4-kms-dsi-ili9881-5inch,rotation=90
-
