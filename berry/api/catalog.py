@@ -96,7 +96,26 @@ class CatalogManager:
         if self.mock_mode:
             self._items = self._load_mock_data()
             return self._items
-        
+
+        # Check for leftover temp file from crashed save
+        temp_path = self.catalog_path.with_suffix('.json.tmp')
+        if temp_path.exists():
+            logger.warning(f'Found leftover temp file from crashed save: {temp_path}')
+            try:
+                # Try to recover - if temp file is valid JSON, use it
+                temp_data = json.loads(temp_path.read_text())
+                if isinstance(temp_data, dict) and 'items' in temp_data:
+                    logger.info('Recovering from temp file...')
+                    import os
+                    os.replace(temp_path, self.catalog_path)
+                    logger.info('Recovery successful')
+                else:
+                    logger.warning('Temp file invalid, removing')
+                    temp_path.unlink()
+            except (json.JSONDecodeError, IOError, OSError) as e:
+                logger.warning(f'Could not recover from temp file: {e}')
+                temp_path.unlink()
+
         try:
             logger.info(f'Loading catalog from {self.catalog_path}')
             if self.catalog_path.exists():
@@ -162,9 +181,23 @@ class CatalogManager:
                 return {'items': []}
     
     def _save_raw(self, catalog: dict):
-        """Save raw catalog.json (thread-safe)."""
+        """Save raw catalog.json atomically (thread-safe).
+
+        Uses temp file + atomic rename to prevent corruption on crash.
+        """
         with self._catalog_lock:
-            self.catalog_path.write_text(json.dumps(catalog, indent=2))
+            temp_path = self.catalog_path.with_suffix('.json.tmp')
+            try:
+                # Write to temp file
+                temp_path.write_text(json.dumps(catalog, indent=2))
+                # Atomic rename (os.replace is atomic on POSIX)
+                import os
+                os.replace(temp_path, self.catalog_path)
+            except Exception:
+                # Clean up temp file on error
+                if temp_path.exists():
+                    temp_path.unlink()
+                raise
     
     def _load_mock_data(self) -> List[CatalogItem]:
         """Load mock data for UI testing."""

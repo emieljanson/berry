@@ -184,8 +184,9 @@ class Berry:
         self.needs_setup = not has_spotify_credentials()
         self._last_credentials_check = 0
         
-        # TempItem and delete mode
+        # TempItem and delete mode (with lock for thread-safe access)
         self.temp_item: Optional[CatalogItem] = None
+        self._temp_item_lock = threading.Lock()
         self.delete_mode_id: Optional[str] = None
         self.saving = False
         self.deleting = False
@@ -284,8 +285,8 @@ class Berry:
         if self._click_sound:
             try:
                 self._click_sound.play()
-            except Exception:
-                pass  # Ignore audio errors
+            except Exception as e:
+                logger.debug(f'Click sound error: {e}')
     
     def _log_video_info(self):
         """Log video driver and display info."""
@@ -668,20 +669,25 @@ class Berry:
         """Download temp item cover in background thread."""
         try:
             local_path = self.catalog_manager.download_temp_image(cover_url)
-            if local_path and self.temp_item and self.temp_item.uri == context_uri:
-                # Update temp item with downloaded image
-                self.temp_item = CatalogItem(
-                    id=self.temp_item.id,
-                    uri=self.temp_item.uri,
-                    name=self.temp_item.name,
-                    type=self.temp_item.type,
-                    artist=self.temp_item.artist,
-                    image=local_path,
-                    images=self.temp_item.images,
-                    is_temp=True
-                )
-                self.renderer.invalidate()
-                logger.info(f'TempItem cover downloaded: {local_path}')
+            if not local_path:
+                return
+
+            # Thread-safe update of temp_item
+            with self._temp_item_lock:
+                if self.temp_item and self.temp_item.uri == context_uri:
+                    # Update temp item with downloaded image
+                    self.temp_item = CatalogItem(
+                        id=self.temp_item.id,
+                        uri=self.temp_item.uri,
+                        name=self.temp_item.name,
+                        type=self.temp_item.type,
+                        artist=self.temp_item.artist,
+                        image=local_path,
+                        images=self.temp_item.images,
+                        is_temp=True
+                    )
+            self.renderer.invalidate()
+            logger.info(f'TempItem cover downloaded: {local_path}')
         except Exception as e:
             logger.debug(f'Temp cover download failed: {e}')
     
@@ -1111,13 +1117,27 @@ class Berry:
         self.volume.on_wake()
     
     def _initial_connect(self):
-        """Force initial connection check at startup."""
-        try:
-            self._refresh_status()
-            if self.connected:
-                logger.info('Connected to librespot')
-        except Exception as e:
-            logger.warning(f'Initial connection failed: {e}')
+        """Initial connection with retry and exponential backoff.
+
+        Retries up to 10 times with increasing delays (1s, 2s, 4s... max 30s).
+        This handles the case where go-librespot isn't ready yet after Pi restart.
+        """
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                self._refresh_status()
+                if self.connected:
+                    logger.info(f'Connected to librespot (attempt {attempt + 1})')
+                    return
+            except Exception as e:
+                logger.warning(f'Connection attempt {attempt + 1}/{max_retries} failed: {e}')
+
+            # Exponential backoff: 1s, 2s, 4s, 8s... max 30s
+            delay = min(2 ** attempt, 30)
+            logger.info(f'Retrying in {delay}s...')
+            time.sleep(delay)
+
+        logger.error(f'Failed to connect to librespot after {max_retries} attempts')
     
     def _save_temp_item(self):
         """Save the current temp item to catalog."""
@@ -1306,12 +1326,17 @@ class Berry:
         playing_index = next((i for i, item in enumerate(items) if item.uri == context_uri), None)
         if playing_index is None:
             return
-        
+
+        # Bounds check - items list could have changed
+        if playing_index >= len(items):
+            logger.debug(f'Sync index out of bounds: {playing_index} >= {len(items)}')
+            return
+
         if playing_index != self.selected_index:
             logger.info(f'Syncing to: {items[playing_index].name}')
             self.selected_index = playing_index
             self.carousel.set_target(playing_index)
-        
+
         self.last_context_uri = context_uri
     
     def _update(self, dt: float):

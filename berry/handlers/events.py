@@ -93,8 +93,9 @@ class EventListener:
     
     def _on_error(self, ws, error):
         """Handle WebSocket error."""
-        # Suppress errors - we'll reconnect anyway
-        pass
+        # Log errors for debugging - we'll reconnect anyway
+        if error:
+            logger.debug(f'WebSocket error: {error}')
     
     def _on_close(self, ws, close_status, close_msg):
         """Handle WebSocket close."""
