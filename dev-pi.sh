@@ -20,6 +20,7 @@ NC='\033[0m'
 
 VERBOSE=false
 PROFILE=false
+SKIP_TESTS=false
 LOG_PID=""
 
 # Parse arguments
@@ -27,16 +28,19 @@ while [[ "$#" -gt 0 ]]; do
     case $1 in
         -v|--verbose) VERBOSE=true ;;
         -p|--profile) PROFILE=true ;;
-        -h|--help) 
-            echo "Usage: ./dev-pi.sh [-v|--verbose] [-p|--profile]"
+        -T|--skip-tests) SKIP_TESTS=true ;;
+        -h|--help)
+            echo "Usage: ./dev-pi.sh [-v|--verbose] [-p|--profile] [-T|--skip-tests]"
             echo ""
             echo "Options:"
-            echo "  -v, --verbose  Show all logs (INFO + DEBUG)"
-            echo "  -p, --profile  Enable frame profiler (shows render timing)"
+            echo "  -v, --verbose     Show all logs (INFO + DEBUG)"
+            echo "  -p, --profile     Enable frame profiler (shows render timing)"
+            echo "  -T, --skip-tests  Skip running tests before sync"
             echo ""
             echo "Commands while running:"
             echo "  r, Enter  Sync files and restart app"
             echo "  s         Sync files only"
+            echo "  t         Run tests locally"
             echo "  l         Show last 20 log lines"
             echo "  q         Quit"
             exit 0
@@ -91,14 +95,54 @@ if ! ssh -o BatchMode=yes -o ConnectTimeout=5 $PI_HOST "exit" 2>/dev/null; then
     echo ""
 fi
 
+# Run tests locally (fast feedback before sync)
+run_tests() {
+    echo -e "${BLUE}🧪 Running tests...${NC}"
+
+    # Check if venv exists, create if needed
+    if [ ! -d "$LOCAL_DIR/venv" ]; then
+        echo -e "${DIM}Creating local venv...${NC}"
+        python3 -m venv "$LOCAL_DIR/venv"
+        source "$LOCAL_DIR/venv/bin/activate"
+        pip install -q -r "$LOCAL_DIR/requirements.txt"
+        pip install -q pytest
+    else
+        source "$LOCAL_DIR/venv/bin/activate"
+        # Install pytest if missing
+        pip show pytest > /dev/null 2>&1 || pip install -q pytest
+    fi
+
+    # Run tests
+    if python3 -m pytest "$LOCAL_DIR/tests/" -v --tb=short 2>&1 | tee /tmp/berry_tests.log | tail -20; then
+        local passed=$(grep -E "passed|PASSED" /tmp/berry_tests.log | tail -1)
+        echo -e "${GREEN}✓ Tests passed${NC} ${DIM}$passed${NC}"
+        deactivate 2>/dev/null || true
+        return 0
+    else
+        echo -e "${RED}✗ Tests failed${NC}"
+        echo -e "${YELLOW}Fix tests before syncing, or use -T to skip${NC}"
+        deactivate 2>/dev/null || true
+        return 1
+    fi
+}
+
 # Sync function - shows what changed
 sync_files() {
+    # Run tests first (unless skipped)
+    if [ "$SKIP_TESTS" = false ] && [ -d "$LOCAL_DIR/tests" ]; then
+        if ! run_tests; then
+            echo -e "${RED}Sync aborted due to failing tests${NC}"
+            return 1
+        fi
+        echo ""
+    fi
+
     echo -e "${BLUE}📦 Syncing...${NC}"
     local output
     output=$(rsync -avz --itemize-changes \
         --exclude '.git' --exclude '.cursor' --exclude 'data' --exclude 'venv' --exclude '__pycache__' \
         "$LOCAL_DIR/" "$PI_HOST:$PI_DIR/" 2>&1)
-    
+
     # Count and show changed files
     local changes=$(echo "$output" | grep "^>f" | wc -l | tr -d ' ')
     if [ "$changes" -gt 0 ]; then
@@ -255,6 +299,7 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "  ${GREEN}r${NC}/Enter  Sync + Restart"
 echo -e "  ${BLUE}s${NC}        Sync only"
+echo -e "  ${CYAN}t${NC}        Run tests locally"
 echo -e "  ${CYAN}l${NC}        Show recent logs"
 echo -e "  ${RED}q${NC}        Quit"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -277,6 +322,11 @@ while true; do
             s)
                 echo ""
                 sync_files
+                echo ""
+                ;;
+            t)
+                echo ""
+                run_tests
                 echo ""
                 ;;
             l)

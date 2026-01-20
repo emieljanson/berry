@@ -78,8 +78,8 @@ class EvdevTouchHandler:
         if self._device:
             try:
                 self._device.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f'Error closing touch device: {e}')
     
     def _find_touchscreen(self) -> Optional['evdev.InputDevice']:
         """Find the touchscreen device."""

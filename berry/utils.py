@@ -10,8 +10,17 @@ logger = logging.getLogger(__name__)
 
 
 def run_async(fn, *args):
-    """Fire-and-forget async execution in daemon thread."""
-    threading.Thread(target=fn, args=args, daemon=True).start()
+    """Fire-and-forget async execution in daemon thread.
+
+    Wraps function to catch and log exceptions.
+    """
+    def wrapper():
+        try:
+            fn(*args)
+        except Exception as e:
+            logger.warning(f'Async task {fn.__name__} failed: {e}', exc_info=True)
+
+    threading.Thread(target=wrapper, daemon=True).start()
 
 
 def set_system_volume(speaker_level: int, headphone_level: int):
