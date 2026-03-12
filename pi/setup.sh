@@ -57,21 +57,26 @@ sudo apt-get install -y python3-venv python3-pip libsdl2-dev libsdl2-image-dev l
 if [ ! -f /usr/local/bin/wifi-connect ]; then
   echo "📶 Installing WiFi Connect..."
   ARCH=$(dpkg --print-architecture)
-  
-  # Map Debian arch to wifi-connect arch
+
+  # Map Debian arch to wifi-connect asset name
   case $ARCH in
-    arm64|aarch64) WC_ARCH="aarch64" ;;
-    armhf) WC_ARCH="armv7hf" ;;
-    *) WC_ARCH="aarch64" ;;
+    arm64|aarch64) WC_ARCH="aarch64-unknown-linux-gnu" ;;
+    armhf) WC_ARCH="armv7-unknown-linux-gnueabihf" ;;
+    *) WC_ARCH="aarch64-unknown-linux-gnu" ;;
   esac
-  
-  # Download wifi-connect
-  WC_VERSION="4.11.82"
-  curl -L "https://github.com/balena-os/wifi-connect/releases/download/v${WC_VERSION}/wifi-connect-v${WC_VERSION}-linux-${WC_ARCH}.tar.gz" \
-    -o /tmp/wifi-connect.tar.gz
-  sudo tar -xzf /tmp/wifi-connect.tar.gz -C /usr/local/bin
-  rm /tmp/wifi-connect.tar.gz
-  echo "✅ WiFi Connect installed"
+
+  # Download latest wifi-connect release
+  WC_URL="https://github.com/balena-os/wifi-connect/releases/latest/download/wifi-connect-${WC_ARCH}.tar.gz"
+  echo "Downloading from: $WC_URL"
+  curl -fL "$WC_URL" -o /tmp/wifi-connect.tar.gz
+  if [ $? -eq 0 ] && [ -s /tmp/wifi-connect.tar.gz ]; then
+    sudo tar -xzf /tmp/wifi-connect.tar.gz -C /usr/local/bin
+    rm /tmp/wifi-connect.tar.gz
+    echo "✅ WiFi Connect installed"
+  else
+    echo "⚠️ WiFi Connect download failed, skipping (captive portal won't be available)"
+    rm -f /tmp/wifi-connect.tar.gz
+  fi
 else
   echo "✅ WiFi Connect already installed"
 fi
