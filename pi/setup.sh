@@ -27,15 +27,15 @@ fi
 # ============================================
 mkdir -p ~/.config/go-librespot
 
-# Create default config if not exists
-if [ ! -f ~/.config/go-librespot/config.toml ]; then
-  cat > ~/.config/go-librespot/config.toml << 'EOF'
-device_name = "Berry"
-device_type = "speaker"
+# Create default config if not exists (go-librespot uses YAML, not TOML)
+if [ ! -f ~/.config/go-librespot/config.yml ]; then
+  cat > ~/.config/go-librespot/config.yml << 'EOF'
+device_name: "Berry"
+device_type: "speaker"
 
-[server]
-enabled = true
-port = 3678
+server:
+  enabled: true
+  port: 3678
 EOF
   echo "✅ go-librespot config created"
 fi
