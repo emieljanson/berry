@@ -5,7 +5,7 @@
 
 set -e
 
-PI_HOST="admin@berry.local"
+PI_HOST="berry@berry.local"
 PI_DIR="~/berry"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -168,7 +168,7 @@ restart_app() {
     else
         echo -e "${RED}✗ Failed to start${NC}"
         ssh $PI_HOST "sudo journalctl -u berry-native -n 10 --no-pager" 2>/dev/null || true
-        ssh $PI_HOST "tail -10 /home/admin/berry/berry.log" 2>/dev/null || true
+        ssh $PI_HOST "tail -10 /home/berry/berry/logs/berry.log" 2>/dev/null || true
     fi
 }
 
@@ -177,7 +177,7 @@ start_logs() {
     kill $LOG_PID 2>/dev/null || true
     sleep 0.2
     
-    ssh $PI_HOST 'tail -f /home/admin/berry/berry.log 2>/dev/null' 2>/dev/null | while IFS= read -r line; do
+    ssh $PI_HOST 'tail -f /home/berry/berry/logs/berry.log 2>/dev/null' 2>/dev/null | while IFS= read -r line; do
         if [ "$VERBOSE" = true ]; then
             # Verbose mode: show everything, just add colors
             case "$line" in
@@ -289,8 +289,11 @@ if systemctl is-active --quiet berry-native; then
 else
     echo "✗ Berry failed"
     sudo journalctl -u berry-native -n 5 --no-pager
-    cat /home/admin/berry/berry.log 2>/dev/null || true
+    cat /home/berry/berry/logs/berry.log 2>/dev/null || true
 fi
+
+# Ensure log directory exists
+mkdir -p logs
 ENDSSH
 
 echo ""
@@ -332,7 +335,7 @@ while true; do
             l)
                 echo ""
                 echo -e "${CYAN}━━━ Recent logs ━━━${NC}"
-                ssh $PI_HOST 'tail -20 /home/admin/berry/berry.log' 2>/dev/null
+                ssh $PI_HOST 'tail -20 /home/berry/berry/logs/berry.log' 2>/dev/null
                 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━${NC}"
                 echo ""
                 ;;
