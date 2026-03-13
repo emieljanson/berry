@@ -105,16 +105,19 @@ class EvdevTouchHandler:
     
     def _scale_coordinates(self, touch_x: int, touch_y: int) -> Tuple[int, int]:
         """Scale touch coordinates to screen coordinates.
-        
-        Direct mapping from touch panel to screen coordinates.
+
+        Display is rotated 270° CW (rotation=270 overlay). The touch panel
+        reports in native panel orientation, so we swap axes:
+          - Touch X (long axis, 0-1279) -> Screen Y (long axis, 0-1280)
+          - Touch Y (short axis, 0-719) -> Screen X (short axis, 0-720)
         """
-        screen_x = int(touch_x * self.screen_width / self._touch_max_x)
-        screen_y = int(touch_y * self.screen_height / self._touch_max_y)
-        
+        screen_x = int(touch_y * self.screen_width / self._touch_max_y)
+        screen_y = int(touch_x * self.screen_height / self._touch_max_x)
+
         # Clamp to screen bounds
         screen_x = max(0, min(self.screen_width - 1, screen_x))
         screen_y = max(0, min(self.screen_height - 1, screen_y))
-        
+
         return screen_x, screen_y
     
     def _read_loop(self):
@@ -143,7 +146,7 @@ class EvdevTouchHandler:
                             pygame.MOUSEBUTTONDOWN,
                             {'pos': pos, 'button': 1}
                         ))
-                        logger.info(f'Touch DOWN at {pos}')
+                        logger.info(f'Touch DOWN at {pos} (raw: {self._touch_x}, {self._touch_y})')
                     
                     elif event.value == 0:  # Touch up
                         self._touching = False
