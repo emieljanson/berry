@@ -11,7 +11,6 @@ This eliminates runtime PIL resizing/alpha compositing for much better FPS.
 """
 import time
 import logging
-import threading
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -28,16 +27,15 @@ class ImageCache:
     All image variants are pre-generated at download time by catalog.py.
     This cache just loads the right variant with pygame (fast!) and maintains
     a surface cache for even faster subsequent access.
+    
+    All loading runs on the main thread — pygame surfaces are not thread-safe.
     """
     
     def __init__(self, images_dir: Path):
         self.images_dir = images_dir
         self.images_dir.mkdir(parents=True, exist_ok=True)
         self.cache: Dict[str, pygame.Surface] = {}
-        self._access_times: Dict[str, float] = {}  # Track last access for LRU eviction
-        self._preload_queue: List[tuple] = []
-        self._preload_lock = threading.Lock()
-        self._preloading = False
+        self._access_times: Dict[str, float] = {}
     
     def get_placeholder(self, size: int) -> pygame.Surface:
         """Get a placeholder surface for missing images."""
@@ -45,54 +43,32 @@ class ImageCache:
         if cache_key not in self.cache:
             placeholder = pygame.Surface((size, size), pygame.SRCALPHA)
             radius = max(12, size // 25)
-            # Use native pygame.draw.rect with border_radius for cleaner corners
             pygame.draw.rect(placeholder, COLORS['bg_elevated'], 
                             (0, 0, size, size), border_radius=radius)
             self.cache[cache_key] = placeholder.convert_alpha()
         return self.cache[cache_key]
     
     def preload_catalog(self, items: List, sizes: List[int] = None):
-        """Pre-load all catalog images in background thread for smooth scrolling."""
+        """Pre-load all catalog images on main thread for smooth scrolling.
+        
+        Images are already pre-scaled PNGs on disk, so this is fast (~5ms each).
+        """
         if sizes is None:
             sizes = [COVER_SIZE, COVER_SIZE_SMALL]
         
-        with self._preload_lock:
-            self._preload_queue.clear()
-            for item in items:
-                for size in sizes:
-                    if item.image:
-                        self._preload_queue.append((item.image, size, False))  # Normal
-                        self._preload_queue.append((item.image, size, True))   # Dimmed
-        
-        # Start preload thread if not running
-        if not self._preloading:
-            self._preloading = True
-            thread = threading.Thread(target=self._preload_worker, daemon=True)
-            thread.start()
-            logger.info(f'Pre-loading {len(self._preload_queue)} images...')
-    
-    def _preload_worker(self):
-        """Background worker to preload images."""
         loaded = 0
-        while True:
-            with self._preload_lock:
-                if not self._preload_queue:
-                    self._preloading = False
-                    logger.info(f'Pre-loaded {loaded} images')
-                    return
-                image_path, size, dimmed = self._preload_queue.pop(0)
-            
-            try:
-                if dimmed:
-                    self.get_dimmed(image_path, size)
-                else:
-                    self.get(image_path, size)
-                loaded += 1
-            except Exception as e:
-                logger.debug(f'Failed to pre-load image {image_path}: {e}')
-            
-            # Small delay to not block main thread
-            time.sleep(0.01)
+        for item in items:
+            if not item.image:
+                continue
+            for size in sizes:
+                try:
+                    self.get(item.image, size)
+                    self.get_dimmed(item.image, size)
+                    loaded += 2
+                except Exception as e:
+                    logger.debug(f'Failed to pre-load {item.image}: {e}')
+        
+        logger.info(f'Pre-loaded {loaded} images')
     
     def _evict_if_needed(self):
         """Evict least recently used cache entries if cache is too large."""

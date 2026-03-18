@@ -2,11 +2,26 @@
 Librespot API Client - Direct REST API for go-librespot.
 """
 import logging
-from typing import Optional
+from typing import Optional, Protocol, runtime_checkable
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class LibrespotAPIProtocol(Protocol):
+    """Interface that both real and mock API must implement."""
+
+    def status(self) -> Optional[dict]: ...
+    def play(self, uri: str, skip_to_uri: str = None, paused: bool = False) -> Optional[bool]: ...
+    def pause(self) -> bool: ...
+    def resume(self) -> bool: ...
+    def next(self) -> bool: ...
+    def prev(self) -> bool: ...
+    def seek(self, position: int) -> bool: ...
+    def set_volume(self, level: int) -> bool: ...
+    def is_connected(self) -> bool: ...
 
 
 class LibrespotAPI:
@@ -28,22 +43,35 @@ class LibrespotAPI:
             logger.debug(f'Status request failed: {e}')
             return None
     
-    def play(self, uri: str, skip_to_uri: str = None) -> bool:
-        """Play a Spotify URI (album/playlist), optionally starting at a specific track."""
+    def play(self, uri: str, skip_to_uri: str = None, paused: bool = False) -> Optional[bool]:
+        """Play a Spotify URI (album/playlist), optionally starting at a specific track.
+
+        Returns:
+            True  - playback started successfully
+            None  - librespot has no active Spotify session (user must connect via app)
+            False - request failed for other reasons (librespot busy/starting up)
+        """
         try:
             body = {'uri': uri}
             logger.info(f'API play: context={uri[:50]}...')
             if skip_to_uri:
                 body['skip_to_uri'] = skip_to_uri
                 logger.info(f'  skip_to_uri: {skip_to_uri}')
+            if paused:
+                body['paused'] = True
+                logger.info('  paused: true (will seek before resume)')
             
             resp = self.session.post(
                 f'{self.base_url}/player/play',
                 json=body,
                 timeout=10  # Longer timeout for slow Pi/network
             )
-            if resp.ok:
+            if resp.status_code == 200:
                 logger.info('Play request sent')
+                return True
+            elif resp.status_code == 204:
+                logger.warning('Play ignored: no active Spotify session')
+                return None
             else:
                 logger.warning(f'Play failed: {resp.status_code} {resp.text}')
             return resp.ok
@@ -120,7 +148,7 @@ class LibrespotAPI:
             return False
     
     def is_connected(self) -> bool:
-        """Check if librespot is reachable."""
+        """Check if librespot is reachable (may or may not have an active session)."""
         try:
             resp = self.session.get(f'{self.base_url}/status', timeout=1)
             return resp.status_code in (200, 204)
@@ -139,7 +167,7 @@ class NullLibrespotAPI:
     def status(self) -> Optional[dict]:
         return None
     
-    def play(self, uri: str, skip_to_uri: str = None) -> bool:
+    def play(self, uri: str, skip_to_uri: str = None, paused: bool = False) -> Optional[bool]:
         return True
     
     def pause(self) -> bool:

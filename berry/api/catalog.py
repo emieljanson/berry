@@ -14,7 +14,7 @@ import logging
 import threading
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Callable
 from io import BytesIO
 
 import requests
@@ -50,13 +50,18 @@ class CatalogManager:
     Handles save/delete, image dedup, progress tracking, and playlist covers.
     """
     
-    def __init__(self, catalog_path: Path, images_path: Path, mock_mode: bool = False):
+    def __init__(self, catalog_path: Path, images_path: Path, mock_mode: bool = False,
+                 progress_path: Optional[Path] = None,
+                 get_progress_expiry: Optional[Callable] = None):
         self.catalog_path = catalog_path
         self.images_path = images_path
+        self.progress_path = progress_path or catalog_path.parent / 'progress.json'
         self.mock_mode = mock_mode
+        self._get_progress_expiry = get_progress_expiry or (lambda: PROGRESS_EXPIRY_HOURS)
         
-        # Thread lock for catalog file operations
+        # Thread locks for file operations
         self._catalog_lock = threading.Lock()
+        self._progress_lock = threading.Lock()
         
         # Ensure images directory exists
         self.images_path.mkdir(parents=True, exist_ok=True)
@@ -140,8 +145,8 @@ class CatalogManager:
                         artist=item.get('artist'),
                         image=image_path,
                         images=item.get('images'),
-                        current_track=item.get('currentTrack'),
                     ))
+                self._populate_current_tracks()
                 logger.info(f'Loaded {len(self._items)} items')
             else:
                 logger.warning(f'Catalog not found at {self.catalog_path}')
@@ -368,38 +373,6 @@ class CatalogManager:
             logger.warning(f'Unexpected error downloading temp image: {e}', exc_info=True)
             return None
     
-    def cleanup_temp_images(self) -> int:
-        """Remove all temporary images (prefixed with 'temp_'). Returns count deleted.
-        
-        Handles all 4 variants per image (normal, small, dim, small_dim).
-        """
-        if self.mock_mode:
-            return 0
-        
-        try:
-            deleted = 0
-            for file in self.images_path.iterdir():
-                if file.name.startswith('temp_') and file.suffix == '.png':
-                    file.unlink()
-                    deleted += 1
-                    # Remove from hash index - extract base hash from filename
-                    # temp_abc12345.png -> abc12345
-                    # temp_abc12345_small.png -> abc12345
-                    base = file.stem.replace('temp_', '').split('_')[0]
-                    if len(base) == 8:  # Valid hash
-                        self.image_hashes.pop(base, None)
-            
-            if deleted:
-                logger.info(f'Cleanup: {deleted} temp image files deleted')
-            return deleted
-            
-        except (IOError, OSError) as e:
-            logger.warning(f'Error cleaning up temp images: {e}', exc_info=True)
-            return 0
-        except Exception as e:
-            logger.warning(f'Unexpected error cleaning up temp images: {e}', exc_info=True)
-            return 0
-    
     # ============================================
     # PLAYLIST COVER COLLECTION
     # ============================================
@@ -570,12 +543,6 @@ class CatalogManager:
         except Exception as e:
             logger.warning(f'Unexpected error updating playlist covers: {e}', exc_info=True)
     
-    def get_collected_covers_count(self, context_uri: str) -> int:
-        """Get number of collected covers for a playlist."""
-        if context_uri in self.playlist_covers:
-            return len(self.playlist_covers[context_uri])
-        return 0
-    
     def get_collected_covers(self, context_uri: str) -> Optional[List[str]]:
         """Get collected cover image paths for a playlist."""
         if context_uri in self.playlist_covers:
@@ -699,98 +666,119 @@ class CatalogManager:
             return False
     
     # ============================================
-    # PROGRESS TRACKING
+    # PROGRESS TRACKING (stored in progress.json)
     # ============================================
-    
-    def save_progress(self, context_uri: str, track_uri: str, 
+
+    def _load_progress_data(self) -> dict:
+        """Load progress.json (thread-safe). Returns {context_uri: {...}}."""
+        with self._progress_lock:
+            try:
+                if self.progress_path.exists():
+                    return json.loads(self.progress_path.read_text())
+            except (json.JSONDecodeError, IOError, OSError) as e:
+                logger.warning(f'Error reading progress file: {e}')
+            return {}
+
+    def _save_progress_data(self, data: dict):
+        """Save progress.json atomically (thread-safe)."""
+        with self._progress_lock:
+            temp_path = self.progress_path.with_suffix('.json.tmp')
+            try:
+                temp_path.write_text(json.dumps(data, indent=2))
+                import os
+                os.replace(temp_path, self.progress_path)
+            except Exception:
+                if temp_path.exists():
+                    temp_path.unlink()
+                raise
+
+    def _populate_current_tracks(self):
+        """Populate in-memory items with progress data for UI display."""
+        progress_data = self._load_progress_data()
+        for item in self._items:
+            entry = progress_data.get(item.uri)
+            if entry:
+                item.current_track = entry
+
+    def save_progress(self, context_uri: str, track_uri: str,
                       position: int, track_name: str = None, artist: str = None):
-        """Save playback progress to catalog item."""
+        """Save playback progress to progress.json."""
         if self.mock_mode or not context_uri or not track_uri:
             return
-        
+
         try:
-            catalog = self._load_raw()
-            item = next((i for i in catalog['items'] if i['uri'] == context_uri), None)
-            
-            if not item:
-                logger.debug(f'Context not in catalog (tempItem?): {context_uri[:40]}...')
-                return
-            
-            current_track = {
+            progress_data = self._load_progress_data()
+
+            entry = {
                 'uri': track_uri,
                 'position': position,
                 'name': track_name,
                 'artist': artist,
                 'updatedAt': datetime.now().isoformat()
             }
-            item['currentTrack'] = current_track
-            self._save_raw(catalog)
-            
-            # Also update in-memory items so UI shows correct track immediately
+            progress_data[context_uri] = entry
+            self._save_progress_data(progress_data)
+
             for mem_item in self.items:
                 if mem_item.uri == context_uri:
-                    mem_item.current_track = current_track
+                    mem_item.current_track = entry
                     break
-            
+
             logger.debug(f'Saved progress: {track_name} @ {position // 1000}s')
-            
-        except (json.JSONDecodeError, IOError, OSError) as e:
-            logger.warning(f'Error saving progress: {e}', exc_info=True)
+
         except Exception as e:
-            logger.warning(f'Unexpected error saving progress: {e}', exc_info=True)
-    
+            logger.warning(f'Error saving progress: {e}', exc_info=True)
+
     def get_progress(self, context_uri: str) -> Optional[dict]:
-        """Get saved progress if < 24 hours old."""
+        """Get saved progress if not expired."""
         if self.mock_mode:
             return None
-        
+
         try:
-            catalog = self._load_raw()
-            item = next((i for i in catalog['items'] if i['uri'] == context_uri), None)
-            
-            if not item or 'currentTrack' not in item:
+            progress_data = self._load_progress_data()
+            entry = progress_data.get(context_uri)
+            if not entry:
                 return None
-            
-            current_track = item['currentTrack']
-            
-            # Check age
-            updated_at = current_track.get('updatedAt')
+
+            updated_at = entry.get('updatedAt')
             if updated_at:
                 updated = datetime.fromisoformat(updated_at)
                 age_hours = (datetime.now() - updated).total_seconds() / 3600
-                if age_hours > PROGRESS_EXPIRY_HOURS:
+                if age_hours > self._get_progress_expiry():
                     logger.debug(f'Progress expired ({age_hours:.1f}h old)')
                     self.clear_progress(context_uri)
                     return None
-            
-            logger.info(f'Resume: "{current_track.get("name")}" @ {current_track.get("position", 0) // 1000}s')
-            return current_track
-            
-        except (json.JSONDecodeError, IOError, OSError) as e:
+
+            logger.info(f'Resume: "{entry.get("name")}" @ {entry.get("position", 0) // 1000}s')
+            return entry
+
+        except Exception as e:
             logger.warning(f'Error getting progress: {e}', exc_info=True)
             return None
-        except Exception as e:
-            logger.warning(f'Unexpected error getting progress: {e}', exc_info=True)
-            return None
-    
+
     def clear_progress(self, context_uri: str):
         """Clear saved progress for a context."""
         if self.mock_mode or not context_uri:
             return
-        
+
         try:
-            catalog = self._load_raw()
-            item = next((i for i in catalog['items'] if i['uri'] == context_uri), None)
-            
-            if item and 'currentTrack' in item:
-                del item['currentTrack']
-                self._save_raw(catalog)
-                logger.debug(f'Cleared progress for: {item.get("name")}')
-                
-        except (json.JSONDecodeError, IOError, OSError) as e:
-            logger.warning(f'Error clearing progress: {e}', exc_info=True)
+            progress_data = self._load_progress_data()
+            if context_uri in progress_data:
+                del progress_data[context_uri]
+                self._save_progress_data(progress_data)
+                logger.debug(f'Cleared progress for: {context_uri[:40]}')
+
         except Exception as e:
-            logger.warning(f'Unexpected error clearing progress: {e}', exc_info=True)
+            logger.warning(f'Error clearing progress: {e}', exc_info=True)
+
+    def clear_all_progress(self):
+        """Delete the progress file entirely (used by library reset)."""
+        try:
+            if self.progress_path.exists():
+                self.progress_path.unlink()
+                logger.info('All progress cleared')
+        except Exception as e:
+            logger.warning(f'Error clearing all progress: {e}', exc_info=True)
     
     # ============================================
     # CLEANUP
@@ -812,7 +800,7 @@ class CatalogManager:
             # /images/abc12345_composite.png -> abc12345_composite
             used_bases = set()
             for item in catalog['items']:
-                img_path = item.get('image', '')
+                img_path = item.get('image') or ''
                 if img_path.startswith('/images/'):
                     filename = img_path.replace('/images/', '')
                     # Extract base name (remove .png and any variant suffix)

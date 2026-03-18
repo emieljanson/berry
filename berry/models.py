@@ -2,8 +2,59 @@
 Berry Data Models - Core data structures.
 """
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Optional, List, Literal
+
+
+class MenuState(Enum):
+    """Setup menu states (replaces 3 separate booleans)."""
+    CLOSED = auto()
+    MAIN = auto()
+    WIFI_LIST = auto()
+    WIFI_AP = auto()
+
+
+@dataclass
+class LibrespotStatus:
+    """Parsed response from the go-librespot /status endpoint."""
+    playing: bool = False
+    paused: bool = False
+    stopped: bool = True
+    volume: Optional[int] = None
+    context_uri: Optional[str] = None
+    track_name: Optional[str] = None
+    track_artist: Optional[str] = None
+    track_album: Optional[str] = None
+    track_cover: Optional[str] = None
+    track_uri: Optional[str] = None
+    position: int = 0
+    duration: int = 0
+
+    @classmethod
+    def from_dict(cls, data: dict, context_uri: Optional[str] = None) -> 'LibrespotStatus':
+        """Parse raw API dict into a typed object."""
+        track = data.get('track') or {}
+        if not isinstance(track, dict):
+            track = {}
+        
+        artist_names = track.get('artist_names', [])
+        artist = ', '.join(artist_names) if artist_names else None
+        
+        return cls(
+            playing=not data.get('stopped', True) and not data.get('paused', False),
+            paused=data.get('paused', False),
+            stopped=data.get('stopped', True),
+            volume=data.get('volume'),
+            context_uri=context_uri,
+            track_name=track.get('name'),
+            track_artist=artist,
+            track_album=track.get('album_name'),
+            track_cover=track.get('album_cover_url'),
+            track_uri=track.get('uri'),
+            position=track.get('position', 0),
+            duration=track.get('duration', 0),
+        )
 
 
 @dataclass
@@ -35,16 +86,16 @@ class NowPlaying:
     duration: int = 0
     
     @property
-    def is_active(self) -> bool:
-        """Check if there's active playback (playing or paused)."""
-        return not self.stopped
-    
-    @property
     def progress(self) -> float:
         """Get playback progress as 0.0-1.0."""
         if self.duration <= 0:
             return 0.0
         return min(1.0, self.position / self.duration)
+    
+    def __repr__(self) -> str:
+        state = 'playing' if self.playing else ('paused' if self.paused else 'stopped')
+        track = self.track_name or '(none)'
+        return f'NowPlaying({state}, {track}, {self.position // 1000}s/{self.duration // 1000}s)'
 
 
 @dataclass

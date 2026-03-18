@@ -2,32 +2,30 @@
 Berry Application - Main application class.
 """
 import os
-import sys
 import time
 import signal
 import logging
-import threading
 import subprocess
+import threading
 from typing import Optional, List
 
-import numpy as np
 import pygame
 
 from .config import (
-    SCREEN_WIDTH, SCREEN_HEIGHT, COLORS,
-    LIBRESPOT_URL, LIBRESPOT_WS, 
-    CATALOG_PATH, IMAGES_DIR, ICONS_DIR,
+    SCREEN_WIDTH, SCREEN_HEIGHT,
+    LIBRESPOT_URL, LIBRESPOT_WS,
+    CATALOG_PATH, PROGRESS_PATH, IMAGES_DIR, ICONS_DIR,
     MOCK_MODE,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
-    CAROUSEL_X, CAROUSEL_Y, CAROUSEL_CENTER_Y, CONTROLS_X, CONTROLS_Y, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
-    PROGRESS_SAVE_INTERVAL,
-    has_spotify_credentials,
+    CAROUSEL_X, CAROUSEL_CENTER_Y, CONTROLS_X, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
+    CAROUSEL_TOUCH_MARGIN, MAX_SWIPE_JUMP, VELOCITY_THRESHOLDS,
+    ACTION_DEBOUNCE, BUTTON_PRESS_DURATION, MENU_HOLD_TIME,
 )
-from .models import CatalogItem, NowPlaying, PlayState
+from .models import CatalogItem, NowPlaying, LibrespotStatus
 from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
-from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager
-from .controllers import VolumeController
+from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings
+from .controllers import VolumeController, PlaybackController
 from .ui import ImageCache, Renderer, RenderContext
 from .utils import run_async
 
@@ -38,10 +36,16 @@ class Berry:
     """Main Berry application."""
     
     def __init__(self, fullscreen: bool = False):
+        # Restore display BEFORE pygame takes over DRM device.
+        # Previous run may have been killed during sleep, leaving
+        # backlight/DPMS off. Must happen before kmsdrm init.
+        SleepManager.restore_display()
+        
         # Try GPU-accelerated driver first on Raspberry Pi
         self._setup_video_driver()
         
         pygame.init()
+        pygame.mixer.quit()  # Release audio device for go-librespot
         pygame.display.set_caption('Berry')
         
         # Initialize display and components
@@ -142,7 +146,12 @@ class Berry:
         
         # API & Catalog (use NullAPI in mock mode)
         self.api = NullLibrespotAPI() if self.mock_mode else LibrespotAPI(LIBRESPOT_URL)
-        self.catalog_manager = CatalogManager(CATALOG_PATH, IMAGES_DIR, mock_mode=self.mock_mode)
+        self.settings = Settings()
+        self.catalog_manager = CatalogManager(
+            CATALOG_PATH, IMAGES_DIR, mock_mode=self.mock_mode,
+            progress_path=PROGRESS_PATH,
+            get_progress_expiry=lambda: self.settings.progress_expiry_hours,
+        )
         self.catalog_manager.load()
         
         # UI Components
@@ -166,7 +175,19 @@ class Berry:
         self.volume = VolumeController(self.api)
         self.auto_pause = AutoPauseManager(
             on_pause=lambda: run_async(self.api.pause),
-            get_volume=lambda: self.volume.level
+            get_volume=lambda: (self.volume.speaker_level, self.volume.headphone_level),
+            get_timeout=lambda: self.settings.auto_pause_timeout,
+        )
+        
+        # Playback controller (owns play/pause/resume, progress, navigation pause)
+        self.playback = PlaybackController(
+            api=self.api,
+            catalog_manager=self.catalog_manager,
+            volume=self.volume,
+            mock_mode=self.mock_mode,
+            on_toast=self._show_toast,
+            on_invalidate=lambda: self.renderer.invalidate(),
+            on_resume=self.auto_pause.restore_volume_if_needed,
         )
         
         # State (with thread-safe now_playing and connected)
@@ -175,64 +196,56 @@ class Berry:
         self._connected = self.mock_mode
         self._connected_lock = threading.Lock()
         self.selected_index = 0
-        self._connection_fail_count = 0  # Track consecutive failures
-        self._connection_grace_threshold = 3  # Failures before showing disconnected
-        self.needs_refresh = True
-        self.running = True
-        
-        # Setup state (first-time Spotify connection)
-        self.needs_setup = not has_spotify_credentials()
-        self._last_credentials_check = 0
+        self._connection_fail_count = 0
+        self._connection_grace_threshold = 3
+        self._running = threading.Event()
+        self._running.set()
         
         # TempItem and delete mode (with lock for thread-safe access)
         self.temp_item: Optional[CatalogItem] = None
         self._temp_item_lock = threading.Lock()
         self.delete_mode_id: Optional[str] = None
-        self.saving = False
-        self.deleting = False
-        
+        self._saving = False
+        self._deleting = False
         
         # Interaction tracking
         self.user_interacting = False
-        self.last_context_uri: Optional[str] = None
-        self.last_progress_save = 0
-        self.last_saved_track_uri: Optional[str] = None
-        self.last_user_play_time = 0
-        self.last_user_play_uri: Optional[str] = None
-        
-        # Non-blocking play request handling
-        self._play_lock = threading.Lock()
-        self._play_in_progress = False
-        self._pending_play: Optional[tuple] = None  # (uri, from_beginning)
-        
-        # Navigation pause state (pause when swiping away from playing item)
-        self._paused_for_navigation = False
-        self._paused_context_uri: Optional[str] = None
-        
-        # Unified play/loading state for UI feedback
-        self.play_state = PlayState()
+        self._last_cover_collect_key: Optional[tuple] = None
+        self._cover_collect_context: Optional[str] = None
+        self._context_change_time: float = 0
         
         # Button debouncing and feedback
         self._last_action_time = 0
-        self._action_debounce = 0.3  # 300ms between button actions
-        self._pressed_button: Optional[str] = None  # 'play', 'prev', 'next', 'volume'
+        self._pressed_button: Optional[str] = None
         self._pressed_time = 0
         
-        # Audio feedback (click sound)
-        self._click_sound = self._create_click_sound()
+        # Toast messages (brief on-screen feedback)
+        self._toast_message: Optional[str] = None
+        self._toast_time: float = 0
+        self._toast_duration: float = 3.0
         
-        # Mock playback state
-        self.mock_playing = False
-        self.mock_position = 0
+        # Startup gate: blocks auto-play until _initial_connect completes
+        self._startup_ready = False
         
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
-        self.mock_duration = 180000
         
         # Performance logging
         self._last_fps_log = time.time()
         self._fps_log_interval = 30  # Log FPS every 30 seconds
+        
+        # Setup menu
+        self.setup_menu = SetupMenu(
+            catalog_manager=self.catalog_manager,
+            settings=self.settings,
+            on_toast=self._show_toast,
+            on_invalidate=lambda: self.renderer.invalidate(),
+            on_library_cleared=self._on_library_cleared,
+        )
+        # Volume button hold tracking (3s hold opens setup menu)
+        self._volume_hold_start: Optional[float] = None
+        self._menu_hold_triggered = False
         
         # Initialize carousel
         self._update_carousel_max_index()
@@ -258,35 +271,31 @@ class Berry:
                 logger.warning(f'Failed to load icon {filename}: {e}', exc_info=True)
         return icons
     
-    def _create_click_sound(self):
-        """Create a short click sound for button feedback."""
-        try:
-            # Initialize mixer if not already done
-            if not pygame.mixer.get_init():
-                pygame.mixer.init(frequency=22050, size=-16, channels=1)
-            
-            # Generate a short click (15ms, 600Hz sine wave with quick fade)
-            duration = 0.015
-            sample_rate = 22050
-            t = np.linspace(0, duration, int(sample_rate * duration), False)
-            wave = np.sin(600 * 2 * np.pi * t) * 0.25  # 600Hz, 25% volume
-            fade = np.linspace(1, 0, len(wave))  # Quick fade out
-            wave = (wave * fade * 32767).astype(np.int16)
-            
-            # Create stereo sound (duplicate mono to both channels)
-            stereo_wave = np.column_stack([wave, wave])
-            return pygame.sndarray.make_sound(stereo_wave)
-        except Exception as e:
-            logger.debug(f'Could not create click sound: {e}')  # Not critical, debug level
-            return None
+    def _show_toast(self, message: str):
+        """Show a brief toast message on screen."""
+        self._toast_message = message
+        self._toast_time = time.time()
+        self.renderer.invalidate()
+
+    def _on_library_cleared(self):
+        """Reset in-memory state after library clear (called by SetupMenu)."""
+        self.catalog_manager.load()
+        with self._temp_item_lock:
+            self.temp_item = None
+        self.selected_index = 0
+        self.carousel.scroll_x = 0.0
+        self.carousel.set_target(0)
+        self._update_carousel_max_index()
+        self.image_cache.cache.clear()
+        self.image_cache._access_times.clear()
     
-    def _play_click(self):
-        """Play the click sound if available."""
-        if self._click_sound:
-            try:
-                self._click_sound.play()
-            except Exception as e:
-                logger.debug(f'Click sound error: {e}')
+    @property
+    def _active_toast(self) -> Optional[str]:
+        """Return toast message if still within display duration."""
+        if self._toast_message and time.time() - self._toast_time < self._toast_duration:
+            return self._toast_message
+        self._toast_message = None
+        return None
     
     def _log_video_info(self):
         """Log video driver and display info."""
@@ -316,7 +325,6 @@ class Berry:
     
     def _on_ws_update(self):
         """Called when WebSocket receives an event."""
-        self.needs_refresh = True
         logger.debug(f'WebSocket event, context: {self.events.context_uri}')
     
     def _on_ws_reconnect(self):
@@ -324,8 +332,6 @@ class Berry:
         logger.info('WebSocket reconnected - refreshing state')
         self._connection_fail_count = 0
         self.connected = True
-        self.needs_refresh = True
-        # Force immediate status refresh
         run_async(self._refresh_status)
     
     @property
@@ -360,6 +366,18 @@ class Berry:
         with self._connected_lock:
             self._connected = value
     
+    @property
+    def running(self) -> bool:
+        """Thread-safe running flag (backed by threading.Event)."""
+        return self._running.is_set()
+    
+    @running.setter
+    def running(self, value: bool):
+        if value:
+            self._running.set()
+        else:
+            self._running.clear()
+    
     def _update_carousel_max_index(self):
         """Update carousel max index when items change."""
         self.carousel.max_index = max(0, len(self.display_items) - 1)
@@ -373,10 +391,6 @@ class Berry:
     def start(self):
         """Start the application."""
         logger.info('Starting Berry...')
-        
-        if self.needs_setup:
-            logger.info('Setup mode: waiting for Spotify connection')
-            logger.info('Connect to "Berry" in your Spotify app')
         
         # Pre-load images
         self.image_cache.preload_catalog(self.catalog_manager.items)
@@ -396,6 +410,7 @@ class Berry:
             run_async(self._initial_connect)
         else:
             logger.info('Running in MOCK MODE')
+            self._startup_ready = True
         
         logger.info('Entering main loop...')
         dt = 1.0 / 60  # Initial delta time
@@ -421,68 +436,65 @@ class Berry:
             else:
                 pygame.display.flip()
             
-            # Dynamic FPS based on current activity (after update/draw):
-            # - 60 FPS: carousel animation, touch dragging, loading spinner
-            #           (Rendering happens first, clock.tick limits upward only)
-            # - 10 FPS: music playing (progress bar updates)
-            # - 5 FPS: idle (fully static screen)
+            target_fps = self._target_fps()
             is_animating = not self.carousel.settled or self.touch.dragging
-            if is_animating or self.play_state.is_loading:
-                target_fps = 60  # Smooth animations and spinner
-            elif self.now_playing.playing:
-                target_fps = 10
-            else:
-                target_fps = 5
             
             dt = self.clock.tick(target_fps) / 1000.0
             
-            # Log frame spikes (>20% over target, minimum 100ms)
             target_frame_time = 1.0 / target_fps
             spike_threshold = max(0.1, target_frame_time * 1.2)
             if dt > spike_threshold:
                 logger.warning(f'Frame spike: {dt*1000:.0f}ms (target: {target_fps} FPS)')
             
             self.perf_monitor.update(dt, is_animating)
-            
-            # Periodic FPS logging
-            now = time.time()
-            if now - self._last_fps_log >= self._fps_log_interval:
-                self._last_fps_log = now
-                avg_fps = self.perf_monitor.current_fps
-                
-                # Determine current target FPS for warning threshold
-                log_is_animating = not self.carousel.settled or self.touch.dragging
-                if log_is_animating or self.play_state.is_loading:
-                    log_target_fps = 60
-                elif self.now_playing.playing:
-                    log_target_fps = 10
-                else:
-                    log_target_fps = 5
-                
-                # Log FPS status
-                is_loading = self.play_state.is_loading
-                logger.info(f'FPS: {avg_fps:.1f} | connected={self.connected} | playing={self.now_playing.playing} | loading={is_loading} | target={log_target_fps}')
-                
-                # Warn if FPS is significantly below target:
-                # - Target 60 FPS (animations): warn if < 30 FPS (50% below)
-                # - Target 10 FPS (playing): warn if < 8 FPS (20% below)
-                # - Target 5 FPS (idle): warn if < 4 FPS (20% below)
-                if not self.sleep_manager.is_sleeping:
-                    if log_target_fps == 60 and avg_fps < 30:
-                        logger.warning(f'Low FPS during animation: {avg_fps:.1f} (target: 60 FPS)')
-                    elif log_target_fps == 10 and avg_fps < 8:
-                        logger.warning(f'Low FPS while playing: {avg_fps:.1f} (target: 10 FPS)')
-                    elif log_target_fps == 5 and avg_fps < 4:
-                        logger.warning(f'Low FPS while idle: {avg_fps:.1f} (target: 5 FPS)')
+            self._log_fps_if_due(target_fps)
         
         # Save progress before shutdown
         logger.info('Shutting down...')
         self._save_progress_on_shutdown()
         
+        # Restore display before exit so next boot doesn't start with black screen
+        if self.sleep_manager.is_sleeping:
+            self.sleep_manager.wake_up()
+        
         self.events.stop()
         self.evdev_touch.stop()
         pygame.quit()
         logger.info('Berry stopped')
+    
+    def _target_fps(self) -> int:
+        """Calculate target FPS based on current activity.
+        
+        60 FPS for animations/loading, 10 for playback/menu, 5 for idle.
+        """
+        if self.setup_menu.is_open or self._volume_hold_start is not None:
+            return 10
+        is_animating = not self.carousel.settled or self.touch.dragging
+        if is_animating or self.playback.play_state.is_loading:
+            return 60
+        elif self.now_playing.playing or self._active_toast:
+            return 10
+        return 5
+    
+    def _log_fps_if_due(self, target_fps: int):
+        """Log FPS stats periodically and warn on drops."""
+        now = time.time()
+        if now - self._last_fps_log < self._fps_log_interval:
+            return
+        
+        self._last_fps_log = now
+        avg_fps = self.perf_monitor.current_fps
+        is_loading = self.playback.play_state.is_loading
+        
+        logger.info(f'FPS: {avg_fps:.1f} | connected={self.connected} | playing={self.now_playing.playing} | loading={is_loading} | target={target_fps}')
+        
+        if not self.sleep_manager.is_sleeping:
+            if target_fps == 60 and avg_fps < 30:
+                logger.warning(f'Low FPS during animation: {avg_fps:.1f} (target: 60 FPS)')
+            elif target_fps == 10 and avg_fps < 8:
+                logger.warning(f'Low FPS while playing: {avg_fps:.1f} (target: 10 FPS)')
+            elif target_fps == 5 and avg_fps < 4:
+                logger.warning(f'Low FPS while idle: {avg_fps:.1f} (target: 5 FPS)')
     
     def _poll_status(self):
         """Poll librespot status in background."""
@@ -512,11 +524,11 @@ class Berry:
     
     def _refresh_status(self):
         """Refresh playback status from librespot."""
-        status = self.api.status()
+        raw = self.api.status()
         was_connected = self.connected
         
         # Determine connection with grace period
-        has_connection = status is not None or self.api.is_connected()
+        has_connection = raw is not None or self.api.is_connected()
         if has_connection:
             if self._connection_fail_count > 0:
                 logger.debug(f'Connection recovered after {self._connection_fail_count} failures')
@@ -533,82 +545,59 @@ class Berry:
                 logger.info(f'CONNECTION RESTORED (was disconnected)')
             else:
                 logger.warning(f'CONNECTION LOST after {self._connection_fail_count} failures')
-            logger.info(f'  fail_count={self._connection_fail_count}, status={status is not None}')
+            logger.info(f'  fail_count={self._connection_fail_count}, status={raw is not None}')
         
-        if status and isinstance(status, dict):
-            track = status.get('track') or {}
-            if not isinstance(track, dict):
-                track = {}
-            
-            playing = not status.get('stopped', True) and not status.get('paused', False)
+        if raw and isinstance(raw, dict):
+            status = LibrespotStatus.from_dict(raw, context_uri=self.events.context_uri)
             
             self.now_playing = NowPlaying(
-                playing=playing,
-                paused=status.get('paused', False),
-                stopped=status.get('stopped', True),
-                context_uri=self.events.context_uri,
-                track_name=track.get('name'),
-                track_artist=', '.join(track.get('artist_names', [])) if track.get('artist_names') else None,
-                track_album=track.get('album_name'),
-                track_cover=track.get('album_cover_url'),
-                position=track.get('position', 0),
-                duration=track.get('duration', 0),
+                playing=status.playing,
+                paused=status.paused,
+                stopped=status.stopped,
+                context_uri=status.context_uri,
+                track_name=status.track_name,
+                track_artist=status.track_artist,
+                track_album=status.track_album,
+                track_cover=status.track_cover,
+                position=status.position,
+                duration=status.duration,
             )
             
-            # Clear pending state - real data received
-            self.play_state.clear()
+            self.playback.play_state.pending_action = None
             
-            # Handle volume ownership
-            spotify_volume = status.get('volume')
-            if spotify_volume is not None:
-                self.volume.handle_spotify_change(spotify_volume)
             
-            # Update tempItem
             self._update_temp_item()
-            
-            # Autoplay detection
             self._check_autoplay()
             
-            # Wake from sleep when music starts
-            if playing and self.sleep_manager.is_sleeping:
+            if status.playing and self.sleep_manager.is_sleeping:
                 self.sleep_manager.wake_up()
                 self._on_wake()
             
-            # Auto-pause check (pauses after 30min in same context)
-            if playing:
-                self.auto_pause.on_play(self.now_playing.context_uri)
+            if status.playing:
+                self.auto_pause.on_play(status.context_uri)
                 self.auto_pause.check(is_playing=True)
-            elif status.get('paused') or status.get('stopped'):
+            elif status.paused or status.stopped:
                 self.auto_pause.on_stop()
         else:
             self.now_playing = NowPlaying()
             self.auto_pause.on_stop()
-        
-        self.needs_refresh = False
     
     def _check_autoplay(self):
         """Detect autoplay and clear progress when context finishes."""
-        new_context = self.now_playing.context_uri
-        old_context = self.last_context_uri
-        
-        if (old_context and new_context and 
-            old_context != new_context and 
-            self.now_playing.playing):
-            
-            recent_user_action = time.time() - self.last_user_play_time < 5
-            expected_context = new_context == self.last_user_play_uri
-            
-            if not recent_user_action and not expected_context:
-                logger.info(f'Context finished: {old_context}')
-                self.catalog_manager.clear_progress(old_context)
+        self.playback.check_autoplay(self.now_playing)
     
     def _update_temp_item(self):
-        """Update tempItem based on current playback context."""
+        """Update tempItem based on current playback context.
+        
+        Thread-safe: uses _temp_item_lock since download threads also write temp_item.
+        """
         context_uri = self.now_playing.context_uri
         
         if not context_uri:
-            if self.temp_item:
+            with self._temp_item_lock:
+                had_temp = self.temp_item is not None
                 self.temp_item = None
+            if had_temp:
                 self._update_carousel_max_index()
                 self.renderer.invalidate()
             return
@@ -616,8 +605,10 @@ class Berry:
         # Check if in catalog (with valid image)
         catalog_item = next((item for item in self.catalog_manager.items if item.uri == context_uri), None)
         if catalog_item and catalog_item.image:
-            if self.temp_item:
+            with self._temp_item_lock:
+                had_temp = self.temp_item is not None
                 self.temp_item = None
+            if had_temp:
                 self._update_carousel_max_index()
                 self.renderer.invalidate()
             return
@@ -625,23 +616,29 @@ class Berry:
         # Create/update tempItem
         is_playlist = 'playlist' in context_uri
         collected_covers = self.catalog_manager.get_collected_covers(context_uri) if is_playlist else None
-        
-        current_cover_count = len(self.temp_item.images or []) if self.temp_item else 0
-        new_cover_count = len(collected_covers or [])
-        
-        # Check if we need to update
-        current_image = self.temp_item.image if self.temp_item else None
         track_cover = self.now_playing.track_cover
         
-        needs_update = (
-            not self.temp_item or 
-            self.temp_item.uri != context_uri or
-            new_cover_count > current_cover_count
-        )
+        start_download = False
         
-        if needs_update:
-            # Use existing local image if available, otherwise start download
-            local_image = current_image if current_image and current_image.startswith('/images/') else None
+        with self._temp_item_lock:
+            current_cover_count = len(self.temp_item.images or []) if self.temp_item else 0
+            new_cover_count = len(collected_covers or [])
+            
+            uri_changed = not self.temp_item or self.temp_item.uri != context_uri
+            
+            needs_update = (
+                uri_changed or
+                new_cover_count > current_cover_count
+            )
+            
+            if not needs_update:
+                return
+            
+            # Only preserve local image if same URI (prevents wrong cover on wrong item)
+            if not uri_changed and self.temp_item.image and self.temp_item.image.startswith('/images/'):
+                local_image = self.temp_item.image
+            else:
+                local_image = None
             
             self.temp_item = CatalogItem(
                 id='temp',
@@ -649,21 +646,20 @@ class Berry:
                 name=self.now_playing.track_album or ('Playlist' if is_playlist else 'Album'),
                 type='playlist' if is_playlist else 'album',
                 artist=self.now_playing.track_artist,
-                image=local_image,
+                image=local_image or track_cover,
                 images=collected_covers,
                 is_temp=True
             )
-            self._update_carousel_max_index()
-            self.renderer.invalidate()
-            logger.info(f'TempItem: {self.temp_item.name}')
             
-            # Download cover in background if we don't have a local image
-            if not local_image and track_cover:
-                threading.Thread(
-                    target=self._download_temp_cover_async,
-                    args=(context_uri, track_cover),
-                    daemon=True
-                ).start()
+            start_download = not local_image and bool(track_cover)
+        
+        self._update_carousel_max_index()
+        self.renderer.invalidate()
+        logger.info(f'TempItem: {self.temp_item.name}')
+        
+        # Download cover in background if we don't have a local image
+        if start_download:
+            run_async(self._download_temp_cover_async, context_uri, track_cover)
     
     def _download_temp_cover_async(self, context_uri: str, cover_url: str):
         """Download temp item cover in background thread."""
@@ -698,7 +694,7 @@ class Berry:
                 self.running = False
             
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                logger.info(f'Event: MOUSEBUTTONDOWN at {event.pos}')
+                logger.debug(f'Event: MOUSEBUTTONDOWN at {event.pos}')
                 if self.sleep_manager.is_sleeping:
                     self.sleep_manager.wake_up()
                     self._on_wake()
@@ -725,9 +721,10 @@ class Berry:
                         self.renderer.invalidate()
             
             elif event.type == pygame.MOUSEBUTTONUP:
-                logger.info(f'Event: MOUSEBUTTONUP at {event.pos}')
+                logger.debug(f'Event: MOUSEBUTTONUP at {event.pos}')
                 if not self.sleep_manager.is_sleeping:
                     self._handle_touch_up(event.pos)
+                    self._handle_button_up()
     
     def _handle_key(self, key):
         """Handle keyboard input."""
@@ -740,23 +737,27 @@ class Berry:
         elif key == pygame.K_SPACE or key == pygame.K_RETURN:
             self._toggle_play()
         elif key == pygame.K_n:
-            self.api.next()
+            self._skip_track(self.api.next)
         elif key == pygame.K_p:
-            self.api.prev()
+            self._skip_track(self.api.prev)
     
     def _handle_touch_down(self, pos):
         """Handle touch/mouse down."""
+        # Menu intercept — all taps handled by menu when open
+        if self.setup_menu.is_open:
+            self.setup_menu.handle_tap(pos, self.renderer.menu_button_rects)
+            return
+        
         x, y = pos
         
-        # Carousel touch zone (matches render area)
-        carousel_x_min = CAROUSEL_X - 50   # 135
-        carousel_x_max = CAROUSEL_X + COVER_SIZE + 50  # 645
+        carousel_x_min = CAROUSEL_X - CAROUSEL_TOUCH_MARGIN
+        carousel_x_max = CAROUSEL_X + COVER_SIZE + CAROUSEL_TOUCH_MARGIN
         
-        logger.info(f'Touch down: pos={pos}, carousel_x_range={carousel_x_min}-{carousel_x_max}')
+        logger.debug(f'Touch down: pos={pos}, carousel_x_range={carousel_x_min}-{carousel_x_max}')
         
         # Check button clicks
         if self._check_button_click(pos):
-            logger.info('Touch down: button click')
+            logger.debug('Touch down: button click')
             return
         
         # Cancel delete mode
@@ -766,12 +767,17 @@ class Berry:
         
         # Carousel swipes - within carousel X zone, full Y range
         if carousel_x_min <= x <= carousel_x_max:
-            logger.info('Touch down: carousel swipe start')
+            logger.debug('Touch down: carousel swipe start')
             self.touch.on_down(pos)
             self.user_interacting = True
             self.play_timer.cancel()
+            self.playback.cancel_pending()
+            
+            # Pause immediately when scrolling starts
+            if self.now_playing.playing and not self.mock_mode:
+                self.playback.pause_for_navigation(self.now_playing.context_uri)
         else:
-            logger.info('Touch down: outside carousel')
+            logger.debug('Touch down: outside carousel')
             self._handle_button_tap(pos)
     
     def _check_button_click(self, pos) -> bool:
@@ -794,9 +800,9 @@ class Berry:
     
     def _handle_touch_up(self, pos):
         """Handle touch/mouse up."""
-        logger.info(f'Touch up: pos={pos}, dragging={self.touch.dragging}')
+        logger.debug(f'Touch up: pos={pos}, dragging={self.touch.dragging}')
         if not self.touch.dragging:
-            logger.info('Touch up: ignored (not dragging)')
+            logger.debug('Touch up: ignored (not dragging)')
             return
         
         drag_index_offset = -self.touch.drag_offset / (COVER_SIZE + COVER_SPACING)
@@ -806,26 +812,23 @@ class Berry:
         self.carousel.scroll_x = visual_position
         
         x, y = pos
-        center_x = SCREEN_WIDTH // 2
         
         if action in ('left', 'right'):
-            # Calculate target based on position + velocity
             abs_vel = abs(velocity)
-            velocity_bonus = 0 if abs_vel < 1.0 else (1 if abs_vel < 2.0 else (2 if abs_vel < 3.5 else 3))
+            v_low, v_mid, v_high = VELOCITY_THRESHOLDS
+            velocity_bonus = 0 if abs_vel < v_low else (1 if abs_vel < v_mid else (2 if abs_vel < v_high else 3))
             
             base_target = round(visual_position)
             target = base_target + velocity_bonus if velocity < 0 else base_target - velocity_bonus
             
-            # Clamp
-            max_jump = 5
-            target = max(self.selected_index - max_jump, min(target, self.selected_index + max_jump))
+            target = max(self.selected_index - MAX_SWIPE_JUMP, min(target, self.selected_index + MAX_SWIPE_JUMP))
             target = max(0, min(target, len(self.display_items) - 1))
             
             self._snap_to(target)
         elif action == 'tap':
             # Debounce tap actions
             now = time.time()
-            if now - self._last_action_time < self._action_debounce:
+            if now - self._last_action_time < ACTION_DEBOUNCE:
                 logger.debug('Carousel tap debounced')
                 return
             
@@ -837,39 +840,26 @@ class Berry:
             elif y > center_y + COVER_SIZE // 2:
                 # Tap on next item (higher Y)
                 self._navigate(1)
-            elif self.connected or self.mock_mode:
-                # Only toggle play if connected
-                logger.info('Carousel tap: play')
-                logger.debug(f'  connected={self.connected}, playing={self.now_playing.playing}')
+            else:
+                logger.debug('Carousel tap: play')
                 self._last_action_time = now
                 self._pressed_button = 'play'
                 self._pressed_time = now
-                self._play_click()
                 self._toggle_play()
                 self.renderer.invalidate()
-            else:
-                logger.info(f'Carousel tap IGNORED (disconnected)')
-                logger.info(f'  connected={self.connected}, fail_count={self._connection_fail_count}')
     
     def _handle_button_tap(self, pos):
         """Handle direct tap on control buttons with debouncing.
         
         Portrait mode: buttons stacked vertically at X=CONTROLS_X, along Y axis.
         """
-        # Debounce: ignore taps within 300ms of each other
         now = time.time()
-        if now - self._last_action_time < self._action_debounce:
+        if now - self._last_action_time < ACTION_DEBOUNCE:
             logger.debug(f'Button tap debounced at ({pos[0]}, {pos[1]})')
             return
         
-        # Don't process API actions if disconnected (except volume which is local too)
-        if not self.connected and not self.mock_mode:
-            logger.info(f'Button tap IGNORED (disconnected) at ({pos[0]}, {pos[1]})')
-            logger.info(f'  connected={self.connected}, fail_count={self._connection_fail_count}')
-            return
-        
         x, y = pos
-        center_y = CONTROLS_Y  # 640
+        center_y = CAROUSEL_CENTER_Y
         btn_spacing = BTN_SPACING  # 155
         
         # Volume button Y position (matches renderer)
@@ -882,7 +872,7 @@ class Berry:
             # Prev: Y = center_y - btn_spacing (485)
             if center_y - btn_spacing - BTN_SIZE <= y <= center_y - btn_spacing + BTN_SIZE:
                 button_pressed = 'prev'
-                run_async(self.api.prev)
+                self._skip_track(self.api.prev)
             # Play: Y = center_y (640)
             elif center_y - PLAY_BTN_SIZE <= y <= center_y + PLAY_BTN_SIZE:
                 button_pressed = 'play'
@@ -890,24 +880,28 @@ class Berry:
             # Next: Y = center_y + btn_spacing (795)
             elif center_y + btn_spacing - BTN_SIZE <= y <= center_y + btn_spacing + BTN_SIZE:
                 button_pressed = 'next'
-                run_async(self.api.next)
-            # Volume: Y = vol_y (~1173)
+                self._skip_track(self.api.next)
+            # Volume: Y = vol_y (~1173) — start hold timer; action fires on release
             elif vol_y - BTN_SIZE <= y <= vol_y + BTN_SIZE:
                 button_pressed = 'volume'
-                self.volume.toggle()
+                self._volume_hold_start = now
+                self._menu_hold_triggered = False
+                # Don't toggle volume here — wait for button up (short tap) or hold (menu)
             
             if button_pressed:
-                logger.info(f'Button press: {button_pressed}')
-                logger.debug(f'  connected={self.connected}, playing={self.now_playing.playing}')
-                logger.debug(f'  paused={self.now_playing.paused}, context={self.now_playing.context_uri}')
+                logger.debug(f'Button press: {button_pressed}')
                 self._last_action_time = now
                 self._pressed_button = button_pressed
                 self._pressed_time = now
-                self._play_click()
                 self.renderer.invalidate()
     
     def _snap_to(self, target_index: int):
-        """Snap carousel to a specific index."""
+        """Snap carousel to a specific index.
+        
+        Only handles carousel movement. Playback decisions (play timer,
+        resume, pause) happen when the carousel settles in _update().
+        This prevents race conditions during rapid swiping.
+        """
         items = self.display_items
         if not items:
             return
@@ -919,34 +913,14 @@ class Berry:
             self.selected_index = target_index
             self.carousel.set_target(target_index)
             
-            # If music is playing and we're navigating away, pause immediately
+            # Pause if navigating away from playing item (handles keyboard nav)
             if self.now_playing.playing and not self.mock_mode:
                 old_item = items[old_index] if old_index < len(items) else None
                 if old_item and self._is_item_playing(old_item):
-                    logger.info('Pausing for navigation...')
-                    self._paused_for_navigation = True
-                    self._paused_context_uri = self.now_playing.context_uri
-                    run_async(self.api.pause)
+                    self.playback.pause_for_navigation(self.now_playing.context_uri)
             
             item = items[target_index]
             logger.debug(f'Snap: {old_index} -> {target_index}, item={item.name}')
-            if not item.is_temp:
-                # Check if we're returning to the item we paused for navigation
-                if (self._paused_for_navigation and 
-                    self._paused_context_uri == item.uri):
-                    # Resume immediately, no timer needed
-                    logger.info(f'Resuming (returned to item): {item.name}')
-                    self._paused_for_navigation = False
-                    self._paused_context_uri = None
-                    self.play_timer.cancel()
-                    run_async(self.api.resume)
-                elif not self._is_item_playing(item):
-                    logger.info(f'PlayTimer starting for: {item.name} (index={target_index})')
-                    self.play_timer.start(item)
-                else:
-                    self.play_timer.cancel()
-            else:
-                self.play_timer.cancel()
         else:
             self.carousel.set_target(target_index)
     
@@ -961,128 +935,44 @@ class Berry:
     
     def _is_item_playing(self, item: CatalogItem) -> bool:
         """Check if an item is currently playing."""
-        return item.uri == self.now_playing.context_uri
+        return self.playback.is_item_playing(item, self.now_playing)
     
+    def _skip_track(self, api_fn):
+        """Save progress, mark as user action, then skip prev/next."""
+        self.playback.last_user_play_time = time.time()
+        self.playback.save_progress(self.now_playing, force=True)
+        run_async(api_fn)
+
     def _toggle_play(self):
         """Toggle play/pause."""
-        items = self.display_items
-        
         if self.mock_mode:
-            self.mock_playing = not self.mock_playing
-            if self.mock_playing and items:
-                item = items[self.selected_index]
-                ct = item.current_track if isinstance(item.current_track, dict) else None
-                self.now_playing = NowPlaying(
-                    playing=True,
-                    context_uri=item.uri,
-                    track_name=ct.get('name', item.name) if ct else item.name,
-                    track_artist=ct.get('artist', item.artist) if ct else item.artist,
-                    position=self.mock_position,
-                    duration=self.mock_duration,
-                )
-            else:
-                self.now_playing = NowPlaying(paused=True, context_uri=self.now_playing.context_uri)
+            self._toggle_mock_play()
             return
-        
-        # Don't try API calls if disconnected
-        if not self.connected:
-            logger.debug('Ignoring toggle_play: disconnected')
-            return
-        
-        # Clear navigation pause state on manual toggle
-        self._paused_for_navigation = False
-        self._paused_context_uri = None
-        
-        if self.now_playing.playing:
-            logger.info('Pausing...')
-            self.play_state.set_pending('pause')
-            self._play_in_progress = False
-            self.renderer.invalidate()
-            run_async(self.api.pause)
-        elif self.now_playing.paused:
-            logger.info('Resuming...')
-            self.play_state.set_pending('play')
-            self.renderer.invalidate()
-            self.auto_pause.restore_volume_if_needed()
-            run_async(self.api.resume)
-        elif items:
+        self.playback.toggle_play(self.display_items, self.selected_index, self.now_playing)
+    
+    def _toggle_mock_play(self):
+        """Toggle mock playback (no real API calls)."""
+        items = self.display_items
+        self.playback.mock_playing = not self.playback.mock_playing
+        if self.playback.mock_playing and items:
             item = items[self.selected_index]
-            logger.info(f'Playing {item.name}')
-            self._play_item(item.uri)
+            ct = item.current_track if isinstance(item.current_track, dict) else None
+            self.now_playing = NowPlaying(
+                playing=True,
+                context_uri=item.uri,
+                track_name=ct.get('name', item.name) if ct else item.name,
+                track_artist=ct.get('artist', item.artist) if ct else item.artist,
+                position=self.playback.mock_position,
+                duration=self.playback.mock_duration,
+            )
+        else:
+            self.now_playing = NowPlaying(paused=True, context_uri=self.now_playing.context_uri)
     
     def _play_item(self, uri: str, from_beginning: bool = False):
-        """Queue a play request (non-blocking). Only the latest request is executed."""
-        self.last_user_play_time = time.time()
-        self.last_user_play_uri = uri
-        
-        # Save current progress before switching
+        """Queue a play request via the playback controller."""
         if self.now_playing.context_uri and self.now_playing.context_uri != uri:
-            self._save_playback_progress()
-        
-        with self._play_lock:
-            if self._play_in_progress:
-                # Replace pending request with the latest one
-                self._pending_play = (uri, from_beginning)
-                logger.debug(f'Queued play request: {uri}')
-                return
-            
-            self._play_in_progress = True
-        
-        # Execute in background thread
-        threading.Thread(
-            target=self._execute_play,
-            args=(uri, from_beginning),
-            daemon=True
-        ).start()
-    
-    def _execute_play(self, uri: str, from_beginning: bool):
-        """Execute the play request in background thread."""
-        logger.info(f'Execute play: context_uri={uri[:50]}..., from_beginning={from_beginning}')
-        try:
-            # Set Spotify volume to 100% on first play
-            self.volume.ensure_spotify_at_100()
-            
-            # Check for saved progress
-            skip_to_uri = None
-            saved_progress = None
-            if not from_beginning:
-                saved_progress = self.catalog_manager.get_progress(uri)
-                if saved_progress:
-                    skip_to_uri = saved_progress.get('uri')
-                    logger.info(f'  Saved progress: track={skip_to_uri}, pos={saved_progress.get("position", 0)//1000}s')
-                else:
-                    logger.info(f'  No saved progress found')
-            
-            success = self.api.play(uri, skip_to_uri=skip_to_uri)
-            logger.info(f'  Play request: success={success}')
-            
-            # Seek to saved position
-            if success and saved_progress and saved_progress.get('position', 0) > 0:
-                time.sleep(0.5)
-                position = saved_progress['position']
-                if self.api.seek(position):
-                    logger.info(f'Seeked to {position // 1000}s')
-        finally:
-            # Check for pending request
-            with self._play_lock:
-                self._play_in_progress = False
-                pending = self._pending_play
-                self._pending_play = None
-            
-            # Execute pending request with debounce delay
-            if pending:
-                # Wait a bit to allow newer requests to override
-                time.sleep(0.5)
-                
-                # Check again if there's a newer pending request
-                with self._play_lock:
-                    if self._pending_play:
-                        # Newer request came in, use that instead
-                        pending = self._pending_play
-                        self._pending_play = None
-                
-                logger.debug(f'Executing queued request: {pending[0]}')
-                self._play_item(pending[0], pending[1])
+            self.playback.save_progress(self.now_playing, force=True)
+        self.playback.play_item(uri, from_beginning)
     
     def _on_wake(self):
         """Called when waking from sleep - reconnect and reset state."""
@@ -1096,7 +986,6 @@ class Berry:
         # Reset connection state for immediate reconnect
         self._connection_fail_count = 0
         self.connected = True  # Optimistic - will correct on next poll if wrong
-        self.needs_refresh = True
         
         # Force immediate status refresh in background
         def wake_refresh():
@@ -1113,92 +1002,127 @@ class Berry:
         
         run_async(wake_refresh)
         
-        # Reset to Berry mode on wake for clean state
-        self.volume.on_wake()
     
-    def _initial_connect(self):
-        """Initial connection with retry and exponential backoff.
+    def _has_network_connection(self) -> bool:
+        """Check if any network interface is connected via NetworkManager."""
+        try:
+            result = subprocess.run(
+                ['nmcli', '-t', '-f', 'STATE', 'general'],
+                capture_output=True, text=True, timeout=3,
+            )
+            return 'connected' in result.stdout.lower()
+        except Exception:
+            return True
 
-        Retries up to 10 times with increasing delays (1s, 2s, 4s... max 30s).
-        This handles the case where go-librespot isn't ready yet after Pi restart.
+    def _initial_connect(self):
+        """Initial connection with fast retries then slower backoff.
+
+        Tries quickly first (every 2s for ~20s) since go-librespot usually
+        boots within 10s on Pi. Falls back to slower retries after that.
         """
-        max_retries = 10
+        start_time = time.time()
+        max_retries = 20
         for attempt in range(max_retries):
             try:
                 self._refresh_status()
                 if self.connected:
                     logger.info(f'Connected to librespot (attempt {attempt + 1})')
-                    return
+                    break
             except Exception as e:
                 logger.warning(f'Connection attempt {attempt + 1}/{max_retries} failed: {e}')
 
-            # Exponential backoff: 1s, 2s, 4s, 8s... max 30s
-            delay = min(2 ** attempt, 30)
-            logger.info(f'Retrying in {delay}s...')
+            # Fast retries first (2s), then slow down (max 10s)
+            delay = 2 if attempt < 10 else min(2 ** (attempt - 10), 10)
             time.sleep(delay)
+        else:
+            logger.error(f'Failed to connect to librespot after {max_retries} attempts')
 
-        logger.error(f'Failed to connect to librespot after {max_retries} attempts')
+        self._startup_ready = True
+
+        # Give NetworkManager time to auto-connect to a known network
+        elapsed = time.time() - start_time
+        if elapsed < 10:
+            time.sleep(10 - elapsed)
+
+        if not self._has_network_connection():
+            logger.info('No network connection detected, opening WiFi setup')
+            self.setup_menu.show_wifi()
     
     def _save_temp_item(self):
         """Save the current temp item to catalog."""
-        if not self.temp_item or self.saving:
+        if self._saving:
             return
+        self._saving = True
         
-        self.saving = True
-        logger.info(f'Saving: {self.temp_item.name}')
-        
-        item_data = {
-            'type': self.temp_item.type,
-            'uri': self.temp_item.uri,
-            'name': self.temp_item.name,
-            'artist': self.temp_item.artist,
-            'image': self.temp_item.image,
-        }
-        
-        success = self.catalog_manager.save_item(item_data)
-        
-        if success:
-            self.catalog_manager.load()
-            self._update_carousel_max_index()
-            self.image_cache.preload_catalog(self.catalog_manager.items)
-            self.temp_item = None
-            self.renderer.invalidate()
-        
-        self.saving = False
+        try:
+            with self._temp_item_lock:
+                temp = self.temp_item
+            
+            if not temp:
+                return
+            
+            if not temp.image:
+                logger.warning(f'Cannot save item without image: {temp.name}')
+                return
+            
+            logger.info(f'Saving: {temp.name}')
+            
+            item_data = {
+                'type': temp.type,
+                'uri': temp.uri,
+                'name': temp.name,
+                'artist': temp.artist,
+                'image': temp.image,
+            }
+            
+            success = self.catalog_manager.save_item(item_data)
+            
+            if success:
+                self.catalog_manager.load()
+                self._update_carousel_max_index()
+                self.image_cache.preload_catalog(self.catalog_manager.items)
+                with self._temp_item_lock:
+                    if self.temp_item and self.temp_item.uri == temp.uri:
+                        self.temp_item = None
+                self.renderer.invalidate()
+        finally:
+            self._saving = False
     
     def _delete_current_item(self):
         """Delete the current item from catalog."""
-        if not self.delete_mode_id or self.deleting:
+        if not self.delete_mode_id or self._deleting:
             return
+        self._deleting = True
         
-        self.deleting = True
-        item_id = self.delete_mode_id
-        old_index = self.selected_index
-        
-        item = next((i for i in self.catalog_manager.items if i.id == item_id), None)
-        if item:
-            logger.info(f'Deleting: {item.name}')
-        
-        success = self.catalog_manager.delete_item(item_id)
-        
-        if success:
-            self.catalog_manager.load()
-            self._update_carousel_max_index()
+        try:
+            item_id = self.delete_mode_id
+            old_index = self.selected_index
             
-            new_index = max(0, old_index - 1)
-            if self.display_items:
-                new_index = min(new_index, len(self.display_items) - 1)
-                self.selected_index = new_index
-                self.carousel.scroll_x = float(new_index)
-                self.carousel.set_target(new_index)
+            item = next((i for i in self.catalog_manager.items if i.id == item_id), None)
+            if item:
+                logger.info(f'Deleting: {item.name}')
+            
+            success = self.catalog_manager.delete_item(item_id)
+            
+            if success:
+                self.catalog_manager.load()
+                self._update_carousel_max_index()
                 
-                new_item = self.display_items[new_index]
-                if not new_item.is_temp:
-                    self._play_item(new_item.uri)
-        
-        self.delete_mode_id = None
-        self.deleting = False
-        self.renderer.invalidate()
+                new_index = max(0, old_index - 1)
+                if self.display_items:
+                    new_index = min(new_index, len(self.display_items) - 1)
+                    self.selected_index = new_index
+                    self.carousel.scroll_x = float(new_index)
+                    self.carousel.set_target(new_index)
+                    
+                    new_item = self.display_items[new_index]
+                    if not new_item.is_temp:
+                        self._play_item(new_item.uri)
+            
+            self.delete_mode_id = None
+            self.renderer.invalidate()
+        finally:
+            self._deleting = False
     
     def _trigger_delete_mode(self):
         """Trigger delete mode for the currently selected item."""
@@ -1214,80 +1138,9 @@ class Berry:
         self.delete_mode_id = item.id
         self.renderer.invalidate()
     
-    def _save_playback_progress(self):
-        """Queue progress save in background thread (non-blocking)."""
-        if self.mock_mode:
-            return
-        
-        # Update timestamp immediately to prevent duplicate saves
-        self.last_progress_save = time.time()
-        
-        # Get current context URI before spawning thread
-        context_uri = self.now_playing.context_uri
-        
-        threading.Thread(
-            target=self._save_playback_progress_async,
-            args=(context_uri,),
-            daemon=True
-        ).start()
-    
-    def _save_playback_progress_async(self, fallback_context_uri: Optional[str]):
-        """Save current playback position (runs in background thread)."""
-        try:
-            status = self.api.status()
-            if not status or not status.get('track'):
-                return
-            
-            context_uri = status.get('context_uri') or fallback_context_uri
-            if not context_uri:
-                return
-            
-            track = status['track']
-            self.catalog_manager.save_progress(
-                context_uri,
-                track.get('uri'),
-                track.get('position', 0),
-                track.get('name'),
-                ', '.join(track.get('artist_names', []))
-            )
-            
-            self.last_saved_track_uri = track.get('uri')
-            
-        except Exception as e:
-            logger.warning('Error saving progress', exc_info=True)
-    
     def _save_progress_on_shutdown(self):
         """Save progress synchronously before shutdown."""
-        if self.mock_mode:
-            return
-        
-        # Check if we have something to save
-        if not self.now_playing.playing and not self.now_playing.context_uri:
-            logger.debug('No active playback to save on shutdown')
-            return
-        
-        try:
-            status = self.api.status()
-            if not status or not status.get('track'):
-                logger.debug('No track info available for shutdown save')
-                return
-            
-            context_uri = status.get('context_uri') or self.now_playing.context_uri
-            if not context_uri:
-                return
-            
-            track = status['track']
-            self.catalog_manager.save_progress(
-                context_uri,
-                track.get('uri'),
-                track.get('position', 0),
-                track.get('name'),
-                ', '.join(track.get('artist_names', []))
-            )
-            logger.info(f'Saved progress on shutdown: {track.get("name")} @ {track.get("position", 0) // 1000}s')
-            
-        except Exception as e:
-            logger.warning(f'Could not save progress on shutdown: {e}')
+        self.playback.save_progress_on_shutdown(self.now_playing)
     
     def _collect_cover_async(self, context_uri: str, cover_url: str):
         """Collect playlist cover in background thread."""
@@ -1315,19 +1168,18 @@ class Berry:
             return
         
         context_uri = self.now_playing.context_uri
-        if not context_uri or context_uri == self.last_context_uri:
+        if not context_uri or context_uri == self.playback.last_context_uri:
             return
         
         if context_uri == self.play_timer.last_played_uri:
             self.play_timer.last_played_uri = None
-            self.last_context_uri = context_uri
+            self.playback.last_context_uri = context_uri
             return
         
         playing_index = next((i for i, item in enumerate(items) if item.uri == context_uri), None)
         if playing_index is None:
             return
 
-        # Bounds check - items list could have changed
         if playing_index >= len(items):
             logger.debug(f'Sync index out of bounds: {playing_index} >= {len(items)}')
             return
@@ -1337,21 +1189,10 @@ class Berry:
             self.selected_index = playing_index
             self.carousel.set_target(playing_index)
 
-        self.last_context_uri = context_uri
+        self.playback.last_context_uri = context_uri
     
     def _update(self, dt: float):
         """Update application state."""
-        # Check for Spotify credentials if in setup mode
-        if self.needs_setup:
-            now = time.time()
-            if now - self._last_credentials_check > 2.0:  # Check every 2 seconds
-                self._last_credentials_check = now
-                if has_spotify_credentials():
-                    logger.info('Spotify credentials detected!')
-                    self.needs_setup = False
-                    self.renderer.invalidate()
-            return  # Skip rest of update while in setup mode
-        
         items = self.display_items
         if items:
             self.selected_index = max(0, min(self.selected_index, len(items) - 1))
@@ -1360,14 +1201,17 @@ class Berry:
         was_animating = not self.carousel.settled
         self.carousel.update(dt)
         
-        if was_animating and self.carousel.settled:
-            new_index = self.carousel.target_index
-            if new_index != self.selected_index and items:
-                self.selected_index = new_index
-                if new_index < len(items):
-                    item = items[new_index]
-                    if not item.is_temp and not self._is_item_playing(item):
-                        self.play_timer.start(item)
+        # When carousel settles: decide what to play (single source of truth)
+        # Skip until startup is complete — librespot needs time after boot
+        if was_animating and self.carousel.settled and not self.touch.dragging and self._startup_ready:
+            item = items[self.selected_index] if self.selected_index < len(items) else None
+            if item and not item.is_temp:
+                if (self.playback.paused_for_navigation and
+                    self.playback.paused_context_uri == item.uri):
+                    self.playback.resume_from_navigation()
+                elif not self._is_item_playing(item):
+                    logger.info(f'PlayTimer starting for: {item.name} (index={self.selected_index})')
+                    self.play_timer.start(item)
         
         # Check long press for delete mode
         if self.touch.check_long_press():
@@ -1380,100 +1224,90 @@ class Berry:
             self.play_timer.item is not None
         )
         
-        # Reset pressed button state after 150ms
-        if self._pressed_button and time.time() - self._pressed_time > 0.15:
+        self.setup_menu.update()
+
+        # Volume hold detection: open menu after MENU_HOLD_TIME seconds
+        if self._volume_hold_start is not None and not self._menu_hold_triggered:
+            if time.time() - self._volume_hold_start >= MENU_HOLD_TIME:
+                self._menu_hold_triggered = True
+                self._volume_hold_start = None
+                self._pressed_button = None
+                self.setup_menu.open()
+        
+        # Keep volume button visually pressed while holding
+        if self._volume_hold_start is not None:
+            self._pressed_button = 'volume'
+            self._pressed_time = time.time()
+        
+        if self._pressed_button and not self._volume_hold_start and time.time() - self._pressed_time > BUTTON_PRESS_DURATION:
             self._pressed_button = None
             self.renderer.invalidate()
         
-        # Check play timer (only if connected)
-        if self.connected or self.mock_mode:
-            item_to_play = self.play_timer.check()
-            if item_to_play:
+        item_to_play = self.play_timer.check()
+        if item_to_play:
+            # Safety: verify the timer item is still the focused item
+            focused_item = items[self.selected_index] if self.selected_index < len(items) else None
+            if not focused_item or focused_item.uri != item_to_play.uri:
+                logger.warning(f'PlayTimer fired for stale item: timer={item_to_play.name}, '
+                             f'focused={focused_item.name if focused_item else "none"}')
+            else:
                 logger.info(f'PlayTimer fired: item={item_to_play.name}, uri={item_to_play.uri[:50]}..., '
                            f'selected_index={self.selected_index}, carousel_pos={self.carousel.scroll_x:.2f}')
-                # Check if we should resume (same item that was paused for navigation)
-                if (self._paused_for_navigation and 
-                    self._paused_context_uri == item_to_play.uri):
-                    logger.info(f'  -> Resuming (paused for nav)')
-                    self._paused_for_navigation = False
-                    self._paused_context_uri = None
-                    run_async(self.api.resume)
+                if (self.playback.paused_for_navigation and
+                    self.playback.paused_context_uri == item_to_play.uri):
+                    logger.info('  -> Resuming (paused for nav)')
+                    self.playback.resume_from_navigation()
                 else:
-                    # New item, play it
-                    logger.info(f'  -> Auto-playing NEW')
-                    self._paused_for_navigation = False
-                    self._paused_context_uri = None
+                    logger.info('  -> Auto-playing NEW')
+                    self.playback.clear_navigation_pause()
                     self._play_item(item_to_play.uri)
-        else:
-            # Cancel play timer if disconnected
-            self.play_timer.cancel()
         
-        # Sync to playing
         self._sync_to_playing()
         
-        # Mock mode progress
-        if self.mock_mode and self.mock_playing:
-            self.mock_position += int(dt * 1000)
-            if self.mock_position >= self.mock_duration:
-                self.mock_position = 0
-            self.now_playing.position = self.mock_position
+        self.playback.update_mock(dt, self.now_playing)
+        self.playback.save_progress(self.now_playing)
         
-        # Periodic progress save
-        if (self.now_playing.playing and 
-            not self.mock_mode and
-            time.time() - self.last_progress_save > PROGRESS_SAVE_INTERVAL):
-            self._save_playback_progress()
-        
-        # Collect playlist covers in background (network request, would block UI)
-        # Capture both values atomically to prevent mismatched context/cover
+        # Collect playlist covers in background (once per track change)
+        # Guard: context_uri comes from WebSocket (instant) but track_cover comes
+        # from HTTP /status (can lag). After a context switch, skip collection for
+        # 2 seconds so we don't associate the old track's cover with the new playlist.
         np = self.now_playing
         if (np.playing and 'playlist' in (np.context_uri or '')):
-            context_uri = np.context_uri
-            cover_url = np.track_cover
-            if context_uri and cover_url:
-                threading.Thread(
-                    target=self._collect_cover_async,
-                    args=(context_uri, cover_url),
-                    daemon=True
-                ).start()
+            if np.context_uri != self._cover_collect_context:
+                self._cover_collect_context = np.context_uri
+                self._context_change_time = time.time()
+                self._last_cover_collect_key = None
+            elif time.time() - self._context_change_time > 2.0:
+                track_key = (np.context_uri, np.track_cover)
+                if track_key != self._last_cover_collect_key and np.track_cover:
+                    self._last_cover_collect_key = track_key
+                    run_async(self._collect_cover_async, np.context_uri, np.track_cover)
+        else:
+            self._cover_collect_context = None
         
-        # Check sleep
         self.sleep_manager.check_sleep(self.now_playing.playing)
         
-        # Update loading state (calculated here so FPS decision can use it)
-        self._update_loading_state()
-    
-    def _update_loading_state(self):
-        """Update loading state for spinner display."""
-        # Clear play_in_progress when playback has started
-        if self.now_playing.playing and self._play_in_progress:
-            self._play_in_progress = False
-        
-        # Clear paused_for_navigation when music starts or user stops interacting
-        if self._paused_for_navigation:
-            if self.now_playing.playing:
-                self._paused_for_navigation = False
-                self._paused_context_uri = None
-            elif self.carousel.settled and self.play_timer.item is None and not self._play_in_progress:
-                self._paused_for_navigation = False
-                self._paused_context_uri = None
-        
-        # If user explicitly paused, stop loading
-        if self.play_state.pending_action == 'pause':
-            self.play_state.stop_loading()
-            return
-        
-        # Start/stop loading based on pending operations
-        should_load = (
-            self._paused_for_navigation or 
-            self.play_timer.item is not None or 
-            self._play_in_progress
+        self.playback.update_loading_state(
+            self.now_playing, self.carousel.settled, self.play_timer.item is not None
         )
-        
-        if should_load:
-            self.play_state.start_loading()
-        else:
-            self.play_state.stop_loading()
+    
+    # ============================================
+    # SETUP MENU
+    # ============================================
+    
+    def _handle_button_up(self):
+        """Handle MOUSEBUTTONUP for volume hold: short tap → toggle, long hold → already opened menu."""
+        if self._volume_hold_start is None:
+            return
+        if self._menu_hold_triggered:
+            self._volume_hold_start = None
+            self._menu_hold_triggered = False
+            return
+        # Short tap: toggle volume
+        self.volume.toggle()
+        self._last_action_time = time.time()
+        self._volume_hold_start = None
+    
     
     def _draw(self):
         """Draw the UI."""
@@ -1485,13 +1319,17 @@ class Berry:
             drag_offset=self.touch.drag_offset,
             dragging=self.touch.dragging,
             is_sleeping=self.sleep_manager.is_sleeping,
-            connected=self.connected,
             volume_index=self.volume.index,
             delete_mode_id=self.delete_mode_id,
             pressed_button=self._pressed_button,
-            is_loading=self.play_state.is_loading,
-            is_playing=self.play_state.display_playing(self.now_playing.playing),
-            needs_setup=self.needs_setup,
+            is_loading=self.playback.play_state.is_loading,
+            is_playing=self.playback.play_state.display_playing(self.now_playing.playing),
+            toast_message=self._active_toast,
+            menu_state=self.setup_menu.state,
+            menu_known_networks=self.setup_menu.known_networks,
+            menu_current_network=self.setup_menu.current_network,
+            auto_pause_minutes=self.settings.auto_pause_minutes,
+            progress_expiry_hours=self.settings.progress_expiry_hours,
         )
         return self.renderer.draw(ctx)
 

@@ -195,6 +195,48 @@ class TestProgressTracking:
         progress = manager.get_progress('spotify:album:unknown')
         assert progress is None
 
+    def test_clear_all_progress(self, catalog_with_file, images_path):
+        """clear_all_progress deletes the progress file entirely."""
+        manager = CatalogManager(catalog_with_file, images_path)
+        manager.load()
+
+        manager.save_progress('spotify:album:test1', 'spotify:track:1', 1000)
+        manager.save_progress('spotify:album:test2', 'spotify:track:2', 2000)
+        assert manager.progress_path.exists()
+
+        manager.clear_all_progress()
+        assert not manager.progress_path.exists()
+        assert manager.get_progress('spotify:album:test1') is None
+        assert manager.get_progress('spotify:album:test2') is None
+
+    def test_progress_stored_in_separate_file(self, catalog_with_file, images_path):
+        """Progress is stored in progress.json, not catalog.json."""
+        manager = CatalogManager(catalog_with_file, images_path)
+        manager.load()
+
+        manager.save_progress('spotify:album:test1', 'spotify:track:1', 5000, 'Song')
+
+        catalog_data = json.loads(catalog_with_file.read_text())
+        for item in catalog_data['items']:
+            assert 'currentTrack' not in item
+
+        progress_data = json.loads(manager.progress_path.read_text())
+        assert 'spotify:album:test1' in progress_data
+        assert progress_data['spotify:album:test1']['position'] == 5000
+
+    def test_progress_populates_current_track_on_load(self, catalog_with_file, images_path):
+        """Loading catalog populates current_track from progress.json."""
+        manager = CatalogManager(catalog_with_file, images_path)
+        manager.load()
+
+        manager.save_progress('spotify:album:test1', 'spotify:track:1', 5000, 'Song', 'Artist')
+
+        manager2 = CatalogManager(catalog_with_file, images_path)
+        items = manager2.load()
+        item = next(i for i in items if i.uri == 'spotify:album:test1')
+        assert item.current_track is not None
+        assert item.current_track['name'] == 'Song'
+
 
 class TestMockMode:
     """Tests for mock mode behavior."""

@@ -4,17 +4,17 @@
 
 ### 1. Install Raspberry Pi OS
 - Download [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-- Choose "Raspberry Pi OS (64-bit)"
+- Choose "Raspberry Pi OS Lite (64-bit)"
 - Click **⚙️ Settings**:
   - Hostname: `berry`
-  - Username: `admin`, password of your choice
+  - Username: `berry`, password of your choice
   - Configure WiFi
   - Enable SSH
 - Flash to SD card
 
 ### 2. Install Berry
 ```bash
-ssh admin@berry.local
+ssh berry@berry.local
 curl -sSL https://raw.githubusercontent.com/emieljanson/berry/main/install.sh | bash
 sudo reboot
 ```

@@ -3,7 +3,6 @@ Berry Configuration - All constants and settings.
 """
 import os
 import sys
-import json
 from pathlib import Path
 
 # ============================================
@@ -33,8 +32,11 @@ LIBRESPOT_WS = os.environ.get('LIBRESPOT_WS', 'ws://localhost:3678/events')
 # Use data folder (shared catalog & images)
 DATA_DIR = Path(__file__).parent.parent / 'data'
 CATALOG_PATH = DATA_DIR / 'catalog.json'
+PROGRESS_PATH = DATA_DIR / 'progress.json'
+SETTINGS_PATH = DATA_DIR / 'settings.json'
 IMAGES_DIR = DATA_DIR / 'images'
 ICONS_DIR = Path(__file__).parent.parent / 'icons'
+LIBRESPOT_STATE_PATH = Path.home() / '.config' / 'go-librespot' / 'state.json'
 
 # Logging directory
 LOG_DIR = Path.home() / 'berry' / 'logs'
@@ -48,7 +50,6 @@ LOG_BACKUP_COUNT = 10  # Keep 10 backup files (~50MB total)
 
 MOCK_MODE = '--mock' in sys.argv or '-m' in sys.argv
 FULLSCREEN = '--fullscreen' in sys.argv or '-f' in sys.argv
-PROFILE_MODE = '--profile' in sys.argv or os.environ.get('BERRY_PROFILE') == '1'
 
 # ============================================
 # COLORS (Design specs from web version)
@@ -59,11 +60,9 @@ COLORS = {
     'bg_secondary': (26, 26, 26),
     'bg_elevated': (40, 40, 40),
     'accent': (189, 101, 252),  # Purple #BD65FC
-    'accent_hover': (205, 130, 255),
     'text_primary': (255, 255, 255),
     'text_secondary': (160, 160, 160),
     'text_muted': (96, 96, 96),
-    'success': (29, 185, 84),
     'error': (232, 80, 80),
 }
 
@@ -94,8 +93,6 @@ CONTROLS_X = 85      # Center of play button (25px margin + 60px radius)
 
 # For carousel center along physical Y (user's horizontal): Y = 640 (center of 1280)
 CAROUSEL_CENTER_Y = 640
-CAROUSEL_Y = CAROUSEL_CENTER_Y - COVER_SIZE // 2  # Top of carousel for touch detection
-CONTROLS_Y = CAROUSEL_CENTER_Y  # Center of buttons (same as carousel center)
 
 # Button sizes
 BTN_SIZE = 100
@@ -127,7 +124,7 @@ SLEEP_TIMEOUT = 120.0  # 2 minutes of inactivity
 PLAY_TIMER_DELAY = 1.0  # seconds before auto-play
 SYNC_COOLDOWN = 3.0  # Block sync for 3s after play timer fires
 PROGRESS_SAVE_INTERVAL = 10  # Save progress every 10 seconds
-PROGRESS_EXPIRY_HOURS = 24  # Expire saved progress after 24 hours
+PROGRESS_EXPIRY_HOURS = 48  # Expire saved progress after 48 hours
 
 # ============================================
 # TOUCH & GESTURES
@@ -136,6 +133,12 @@ PROGRESS_EXPIRY_HOURS = 24  # Expire saved progress after 24 hours
 SWIPE_THRESHOLD = 50      # Minimum distance for swipe
 SWIPE_VELOCITY = 0.3      # Minimum velocity (pixels/ms)
 LONG_PRESS_TIME = 1.0     # Time for long press (seconds)
+CAROUSEL_TOUCH_MARGIN = 50  # Extra pixels beyond cover for touch zone
+MAX_SWIPE_JUMP = 5          # Max items to skip in one swipe
+VELOCITY_THRESHOLDS = (1.0, 2.0, 3.5)  # Velocity breakpoints for swipe bonus
+ACTION_DEBOUNCE = 0.3     # Seconds between button actions
+BUTTON_PRESS_DURATION = 0.15  # Seconds to show pressed state
+MENU_HOLD_TIME = 3.0      # Seconds to hold volume button to open setup menu
 
 # ============================================
 # AUTO-PAUSE (prevents music playing forever)
@@ -152,25 +155,4 @@ PERF_LOG_INTERVAL = 5.0   # Log performance every 5 seconds
 PERF_SAMPLE_SIZE = 60     # Average over 60 frames
 IMAGE_CACHE_MAX_SIZE = 200  # Maximum cached images
 
-# ============================================
-# LIBRESPOT CONFIG
-# ============================================
-
-LIBRESPOT_CONFIG_DIR = Path(os.path.expanduser('~/.config/go-librespot'))
-LIBRESPOT_STATE_FILE = LIBRESPOT_CONFIG_DIR / 'state.json'
-
-
-def has_spotify_credentials() -> bool:
-    """Check if Spotify credentials are configured in go-librespot."""
-    if MOCK_MODE:
-        return True
-    
-    if LIBRESPOT_STATE_FILE.exists():
-        try:
-            with open(LIBRESPOT_STATE_FILE) as f:
-                state = json.load(f)
-                return bool(state.get('credentials'))
-        except (json.JSONDecodeError, IOError):
-            pass
-    return False
 

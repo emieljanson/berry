@@ -49,10 +49,6 @@ class SmoothCarousel:
             self.settled = True
         
         return True
-    
-    def get_offset(self, item_index: int) -> float:
-        """Get the x offset for an item (used for drawing)."""
-        return item_index - self.scroll_x
 
 
 class PlayTimer:

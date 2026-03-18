@@ -4,15 +4,15 @@ Renderer - All drawing/rendering logic for the Berry UI.
 import logging
 import time
 import math
-from typing import Optional, List, Dict, Tuple, Callable
+from typing import Optional, List, Dict, Tuple
 
 import pygame
 import pygame.gfxdraw
 
-from .helpers import draw_aa_circle, draw_aa_rounded_rect
+from .helpers import draw_aa_circle
 from .image_cache import ImageCache
 from .context import RenderContext
-from ..models import CatalogItem, NowPlaying
+from ..models import CatalogItem, MenuState, NowPlaying
 from ..config import (
     SCREEN_WIDTH, SCREEN_HEIGHT, COLORS,
     COVER_SIZE, COVER_SIZE_SMALL, COVER_SPACING,
@@ -53,26 +53,31 @@ class Renderer:
         self._carousel_rect = pygame.Rect(CAROUSEL_X - 50, 0, COVER_SIZE + 100, SCREEN_HEIGHT)
         self._last_playing_state: Optional[bool] = None
         self._last_selected_index: Optional[int] = None
+        self._last_toast: Optional[str] = None
         
         # Button hit rectangles (updated during draw)
         self.add_button_rect: Optional[Tuple[int, int, int, int]] = None
         self.delete_button_rect: Optional[Tuple[int, int, int, int]] = None
         
-        # Profiler callback (set by app.py when profiling is enabled)
-        self._profile_mark: Optional[Callable[[str], None]] = None
-    
-    def set_profiler(self, mark_fn: Optional[Callable[[str], None]]):
-        """Set the profiler mark function for detailed draw timing."""
-        self._profile_mark = mark_fn
-    
-    def _mark(self, section: str):
-        """Mark a profiler section if profiling is enabled."""
-        if self._profile_mark:
-            self._profile_mark(section)
+        # Menu button rects (updated when menu is drawn)
+        self.menu_button_rects: Dict[str, pygame.Rect] = {}
     
     def invalidate(self):
         """Force a full redraw on next frame."""
         self._needs_full_redraw = True
+    
+    @staticmethod
+    def _get_track_key(item: Optional[CatalogItem], now_playing: NowPlaying) -> Optional[Tuple[str, str]]:
+        """Return (name, artist) tuple for the track to display, or None."""
+        if not item:
+            return None
+        if now_playing.context_uri == item.uri and now_playing.track_name:
+            return (now_playing.track_name, now_playing.track_artist or '')
+        if item.current_track and isinstance(item.current_track, dict):
+            name = item.current_track.get('name', item.name) or item.name
+            artist = item.current_track.get('artist', item.artist or '') or item.artist or ''
+            return (name, artist)
+        return (item.name or 'Unknown', item.artist or '')
     
     def draw(self, ctx: RenderContext) -> Optional[List[pygame.Rect]]:
         """
@@ -89,32 +94,19 @@ class Renderer:
             self._needs_full_redraw = True
             return None
         
-        # Setup mode - show Spotify connect instructions
-        if ctx.needs_setup:
-            self._draw_background()
-            self._draw_setup_screen()
-            self._needs_full_redraw = True
+        # Menu overlay — draw full scene then overlay on top
+        if ctx.menu_state != MenuState.CLOSED:
+            self.add_button_rect = None
+            self.delete_button_rect = None
+            self._draw_menu_frame(ctx)
             return None
         
         # Clear button hit rects
         self.add_button_rect = None
         self.delete_button_rect = None
         
-        # Get current item to check track info
         current_item = ctx.items[ctx.selected_index] if ctx.selected_index < len(ctx.items) else None
-        
-        # Determine current track key (same logic as _draw_track_info)
-        if current_item:
-            if ctx.now_playing.context_uri == current_item.uri and ctx.now_playing.track_name:
-                current_track_key = (ctx.now_playing.track_name, ctx.now_playing.track_artist or '')
-            elif current_item.current_track and isinstance(current_item.current_track, dict):
-                name = current_item.current_track.get('name', current_item.name) or current_item.name
-                artist = current_item.current_track.get('artist', current_item.artist or '') or current_item.artist or ''
-                current_track_key = (name, artist)
-            else:
-                current_track_key = (current_item.name or 'Unknown', current_item.artist or '')
-        else:
-            current_track_key = None
+        current_track_key = self._get_track_key(current_item, ctx.now_playing)
         
         # Check if we need a full redraw
         state_changed = (
@@ -124,17 +116,13 @@ class Renderer:
             self._last_track_key != current_track_key
         )
         
+        # Toast changes need redraw too
+        toast_changed = self._last_toast != ctx.toast_message
+        
         if state_changed:
             self._needs_full_redraw = True
             self._last_playing_state = ctx.now_playing.playing
             self._last_selected_index = ctx.selected_index
-        
-        # Disconnected state
-        if not ctx.connected:
-            self._draw_background()
-            self._draw_disconnected()
-            self._needs_full_redraw = True
-            return None
         
         # Empty state
         if not ctx.items:
@@ -156,48 +144,38 @@ class Renderer:
         if self._needs_full_redraw:
             # Full redraw
             self._draw_background()
-            self._mark('draw_bg')
-            
             self._draw_track_info(current_item, ctx.now_playing)
-            self._mark('draw_track')
-            
             self._draw_controls(ctx.is_playing, ctx.volume_index, ctx.pressed_button)
-            self._mark('draw_controls')
             
-            # Cache static parts
             if self._static_layer is None:
                 self._static_layer = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
             self._static_layer.blit(self.screen, (0, 0))
-            self._mark('cache_static')
             
-            # Draw carousel
             self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
-            self._mark('draw_carousel')
+            if ctx.toast_message:
+                self._draw_toast(ctx.toast_message)
+            self._last_toast = ctx.toast_message
             
             self._needs_full_redraw = False
             return None
         
-        elif is_animating:
+        elif is_animating or toast_changed:
             # Partial update - only carousel area
             self.screen.blit(self._static_layer, 
                            self._carousel_rect.topleft, 
                            self._carousel_rect)
-            self._mark('blit_static')
-            
             self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
-            self._mark('draw_carousel')
+            if ctx.toast_message:
+                self._draw_toast(ctx.toast_message)
+            self._last_toast = ctx.toast_message
             return [self._carousel_rect]
         
         else:
-            # Idle - update progress bar if playing
             if ctx.now_playing.playing or ctx.is_loading:
                 self.screen.blit(self._static_layer,
                                self._carousel_rect.topleft,
                                self._carousel_rect)
-                self._mark('blit_static')
-                
                 self._draw_carousel(ctx.items, effective_scroll, ctx.now_playing, ctx.delete_mode_id, ctx.is_loading)
-                self._mark('draw_carousel')
                 return [self._carousel_rect]
             return []
     
@@ -226,107 +204,28 @@ class Renderer:
         text_surface = font.render(text, True, color)
         return pygame.transform.rotate(text_surface, -90)  # -90 = 90° CW
     
-    def _draw_disconnected(self):
-        """Draw disconnected state (portrait mode)."""
-        text = self._render_text_rotated('Connecting to Berry...', self.font_large, COLORS['text_secondary'])
-        # Portrait center: X=360 (vertical center), Y=640 (horizontal center)
-        rect = text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
-        self.screen.blit(text, rect)
-    
-    def _draw_setup_screen(self):
-        """Draw Spotify setup instructions for first-time users (portrait mode)."""
-        # Portrait: X is user's vertical (720 total), Y is user's horizontal (1280 total)
-        center_x = SCREEN_WIDTH // 2   # 360 - vertical center
-        center_y = SCREEN_HEIGHT // 2  # 640 - horizontal center
-        
-        # Title (rotated text, positioned at user's top)
-        title = self._render_text_rotated('Welkom bij Berry', self.font_large, COLORS['text_primary'])
-        # User's top = high X value. Offset from center along X.
-        title_rect = title.get_rect(center=(center_x + 120, center_y))
-        self.screen.blit(title, title_rect)
-        
-        # Spotify icon (using accent color circle as placeholder)
-        # Position slightly below title in user's view = slightly lower X
-        icon_x = center_x + 30
-        pygame.draw.circle(self.screen, COLORS['accent'], (icon_x, center_y), 40)
-        
-        # Music note symbol (rotated)
-        note = self._render_text_rotated('♪', self.font_large, COLORS['text_primary'])
-        note_rect = note.get_rect(center=(icon_x, center_y))
-        self.screen.blit(note, note_rect)
-        
-        # Instructions (each on separate line in user's view = spaced along Y)
-        instructions = [
-            "Open Spotify op je telefoon",
-            "Tik op het speaker icoon",
-            "Kies 'Berry'",
-        ]
-        
-        # Start position: below icon in user's view = lower X value
-        x_pos = center_x - 60
-        y_start = center_y - 200  # Start from user's left side
-        
-        for i, line in enumerate(instructions):
-            y_pos = y_start + i * 150  # Space along Y (user's horizontal)
-            
-            # Step number
-            step_text = f"{i + 1}."
-            step = self._render_text_rotated(step_text, self.font_medium, COLORS['accent'])
-            step_rect = step.get_rect(center=(x_pos + 30, y_pos))
-            self.screen.blit(step, step_rect)
-            
-            # Instruction text
-            text = self._render_text_rotated(line, self.font_medium, COLORS['text_secondary'])
-            text_rect = text.get_rect(center=(x_pos - 10, y_pos))
-            self.screen.blit(text, text_rect)
-        
-        # Waiting indicator (at user's bottom = low X value)
-        waiting = self._render_text_rotated('Wachten op verbinding...', self.font_small, COLORS['text_muted'])
-        waiting_rect = waiting.get_rect(center=(60, center_y))
-        self.screen.blit(waiting, waiting_rect)
-    
     def _draw_empty_state(self):
-        """Draw empty catalog state (portrait mode)."""
-        center_x = SCREEN_WIDTH // 2   # 360
-        center_y = SCREEN_HEIGHT // 2  # 640
+        """Draw idle screen when catalog is empty (portrait mode)."""
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
         
-        # Draw plus icon (already rotated when loaded)
-        icon = self.icons.get('plus')
-        if icon:
-            icon_size = 64
-            scaled_icon = pygame.transform.smoothscale(icon, (icon_size, icon_size))
-            tinted = scaled_icon.copy()
-            tinted.fill(COLORS['accent'], special_flags=pygame.BLEND_RGB_MULT)
-            # Position above center in user's view = higher X
-            icon_rect = tinted.get_rect(center=(center_x + 40, center_y))
-            self.screen.blit(tinted, icon_rect)
+        line1 = self._render_text_rotated('Speel naar Berry via Spotify', self.font_medium, COLORS['text_secondary'])
+        line1_rect = line1.get_rect(center=(center_x + 20, center_y))
+        self.screen.blit(line1, line1_rect)
         
-        title = self._render_text_rotated('No music yet', self.font_large, COLORS['text_primary'])
-        title_rect = title.get_rect(center=(center_x - 30, center_y))
-        self.screen.blit(title, title_rect)
-        
-        sub = self._render_text_rotated('Play music via Spotify and tap + to add', self.font_medium, COLORS['text_secondary'])
-        sub_rect = sub.get_rect(center=(center_x - 70, center_y))
-        self.screen.blit(sub, sub_rect)
+        line2 = self._render_text_rotated('Tik + om op te slaan', self.font_medium, COLORS['text_secondary'])
+        line2_rect = line2.get_rect(center=(center_x - 20, center_y))
+        self.screen.blit(line2, line2_rect)
     
     def _draw_track_info(self, item: Optional[CatalogItem], now_playing: NowPlaying):
         """Draw track name and artist (portrait mode - at user's top)."""
         if not item:
             return
         
-        # Determine what to show
-        if now_playing.context_uri == item.uri and now_playing.track_name:
-            name = now_playing.track_name
-            artist = now_playing.track_artist or ''
-        elif item.current_track and isinstance(item.current_track, dict):
-            name = item.current_track.get('name', item.name) or item.name
-            artist = item.current_track.get('artist', item.artist or '') or item.artist or ''
-        else:
-            name = item.name or 'Unknown'
-            artist = item.artist or ''
-        
-        # Check if text changed
-        track_key = (name, artist)
+        track_key = self._get_track_key(item, now_playing)
+        if not track_key:
+            return
+        name, artist = track_key
         if track_key != self._last_track_key:
             self._last_track_key = track_key
             
@@ -403,16 +302,11 @@ class Renderer:
             
             self.screen.blit(cover, (draw_x, draw_y))
         
-        self._mark('carousel_covers')
-        
         if center_cover_rect and center_item:
             self._draw_cover_progress(center_cover_rect, center_item, now_playing)
-            self._mark('carousel_progress')
             
-            # Draw loading spinner if loading
             if loading:
                 self._draw_loading_spinner(center_cover_rect)
-                self._mark('carousel_spinner')
             
             if center_item.is_temp:
                 self._draw_add_button(center_cover_rect)
@@ -472,34 +366,32 @@ class Renderer:
     
     def _draw_controls(self, is_playing: bool, volume_index: int, pressed_button: Optional[str] = None):
         """Draw playback control buttons (portrait mode - buttons along Y axis)."""
-        # Portrait mode: buttons laid out along Y axis (user's horizontal)
-        x = CONTROLS_X  # Position along physical X (user's vertical = bottom)
-        center_y = CAROUSEL_CENTER_Y  # 640
+        x = CONTROLS_X
+        center_y = CAROUSEL_CENTER_Y
         btn_spacing = BTN_SPACING
         
-        # Base colors
         gray_color = COLORS['bg_elevated']
         play_color = COLORS['accent']
         
-        # Prev button (left of play button in user's view = lower Y)
+        # Prev button
         prev_center = (x, center_y - btn_spacing)
         prev_color = self._lighten_color(gray_color) if pressed_button == 'prev' else gray_color
         draw_aa_circle(self.screen, prev_color, prev_center, BTN_SIZE // 2)
         self._draw_icon('prev', prev_center)
         
-        # Play/Pause button (center)
+        # Play/Pause button
         play_center = (x, center_y)
         play_btn_color = self._lighten_color(play_color) if pressed_button == 'play' else play_color
         draw_aa_circle(self.screen, play_btn_color, play_center, PLAY_BTN_SIZE // 2)
         self._draw_icon('pause' if is_playing else 'play', play_center)
         
-        # Next button (right of play button in user's view = higher Y)
+        # Next button
         next_center = (x, center_y + btn_spacing)
         next_color = self._lighten_color(gray_color) if pressed_button == 'next' else gray_color
         draw_aa_circle(self.screen, next_color, next_center, BTN_SIZE // 2)
         self._draw_icon('next', next_center)
         
-        # Volume button (far right in user's view = highest Y)
+        # Volume button
         right_cover_edge = center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2
         vol_center = (x, right_cover_edge - BTN_SIZE // 2)
         vol_color = self._lighten_color(gray_color) if pressed_button == 'volume' else gray_color
@@ -514,50 +406,33 @@ class Renderer:
             rect = icon.get_rect(center=center)
             self.screen.blit(icon, rect)
     
-    def _draw_add_button(self, cover_rect: tuple):
-        """Draw + button on cover for temp items (portrait mode)."""
+    def _draw_overlay_button(self, cover_rect: tuple, icon_name: str, tint: tuple) -> tuple:
+        """Draw a tinted icon button on the cover. Returns (x, y, w, h) hit rect."""
         cover_x, cover_y, cover_w, cover_h = cover_rect
-        
-        btn_size = 100
-        icon_size = 72
-        margin = 16
-        # Portrait mode: button at bottom-right of cover (user sees as top-right)
-        # Physical: low X, high Y
+        btn_size, icon_size, margin = 100, 72, 16
+        circle_radius = int(icon_size * (42 / 56) / 2)
         btn_x = cover_x + margin
         btn_y = cover_y + cover_h - btn_size - margin
         center = (btn_x + btn_size // 2, btn_y + btn_size // 2)
         
-        icon = self.icons.get('plus')
-        if icon:
-            scaled_icon = pygame.transform.smoothscale(icon, (icon_size, icon_size))
-            tinted = scaled_icon.copy()
-            tinted.fill(COLORS['accent'], special_flags=pygame.BLEND_RGB_MULT)
-            icon_rect = tinted.get_rect(center=center)
-            self.screen.blit(tinted, icon_rect)
+        draw_aa_circle(self.screen, (255, 255, 255), center, circle_radius)
         
-        self.add_button_rect = (btn_x, btn_y, btn_size, btn_size)
+        icon = self.icons.get(icon_name)
+        if icon:
+            scaled = pygame.transform.smoothscale(icon, (icon_size, icon_size))
+            tinted = scaled.copy()
+            tinted.fill(tint, special_flags=pygame.BLEND_RGB_MULT)
+            self.screen.blit(tinted, tinted.get_rect(center=center))
+        
+        return (btn_x, btn_y, btn_size, btn_size)
+    
+    def _draw_add_button(self, cover_rect: tuple):
+        """Draw + button on cover for temp items."""
+        self.add_button_rect = self._draw_overlay_button(cover_rect, 'plus', COLORS['accent'])
     
     def _draw_delete_button(self, cover_rect: tuple):
-        """Draw - button on cover for delete mode (portrait mode)."""
-        cover_x, cover_y, cover_w, cover_h = cover_rect
-        
-        btn_size = 100
-        icon_size = 72
-        margin = 16
-        # Portrait mode: button at bottom-right of cover (user sees as top-right)
-        btn_x = cover_x + margin
-        btn_y = cover_y + cover_h - btn_size - margin
-        center = (btn_x + btn_size // 2, btn_y + btn_size // 2)
-        
-        icon = self.icons.get('minus')
-        if icon:
-            scaled_icon = pygame.transform.smoothscale(icon, (icon_size, icon_size))
-            tinted = scaled_icon.copy()
-            tinted.fill(COLORS['error'], special_flags=pygame.BLEND_RGB_MULT)
-            icon_rect = tinted.get_rect(center=center)
-            self.screen.blit(tinted, icon_rect)
-        
-        self.delete_button_rect = (btn_x, btn_y, btn_size, btn_size)
+        """Draw - button on cover for delete mode."""
+        self.delete_button_rect = self._draw_overlay_button(cover_rect, 'minus', COLORS['error'])
     
     def _generate_spinner_frames(self, size: int, num_frames: int = 30) -> List[pygame.Surface]:
         """Generate pre-rendered spinner frames for smooth animation with ease-in-out."""
@@ -634,4 +509,110 @@ class Renderer:
         
         # Blit the pre-rendered frame
         self.screen.blit(frame, (cover_x, cover_y))
+    
+    def _draw_toast(self, message: str):
+        """Draw a toast pill with rotated text, centered on the carousel area."""
+        text_surface = self.font_medium.render(message, True, COLORS['text_primary'])
+        text_w, text_h = text_surface.get_size()
+        
+        # Pill dimensions (padding around text, then rotated)
+        pad_x, pad_y = 24, 14
+        pill_w = text_w + pad_x * 2
+        pill_h = text_h + pad_y * 2
+        
+        pill = pygame.Surface((pill_w, pill_h), pygame.SRCALPHA)
+        pygame.draw.rect(pill, (30, 30, 30, 220), (0, 0, pill_w, pill_h), border_radius=pill_h // 2)
+        pill.blit(text_surface, (pad_x, pad_y))
+        
+        # Rotate for portrait display
+        rotated = pygame.transform.rotate(pill, -90)
+        
+        # Center on carousel area
+        rect = rotated.get_rect(center=(CAROUSEL_X + COVER_SIZE // 2, CAROUSEL_CENTER_Y))
+        self.screen.blit(rotated, rect)
+    
+    # ============================================
+    # SETUP MENU
+    # ============================================
+
+    # Shared layout constants for all menu screens.
+    # Physical portrait 720x1280; user holds left-side up.
+    # High physical X = user's top. Buttons stack downward (decreasing X).
+    _MENU_BTN_H = 80
+    _MENU_BTN_GAP = 10
+    _MENU_BTN_W = 400
+    _MENU_BTN_Y = 440      # physical Y start (centered on 640)
+    _MENU_TOP_X = 565       # first button X
+    _MENU_TITLE_X = 670     # title X
+    
+    def _draw_menu_frame(self, ctx: 'RenderContext'):
+        """Draw fully black background then the active menu screen."""
+        self.screen.fill((0, 0, 0))
+        
+        if ctx.menu_state == MenuState.WIFI_LIST:
+            buttons = []
+            for i, ssid in enumerate(ctx.menu_known_networks[:5]):
+                is_current = ssid == ctx.menu_current_network
+                color = COLORS['accent'] if is_current else COLORS['bg_elevated']
+                display = ssid if len(ssid) <= 20 else ssid[:18] + '..'
+                buttons.append((f'reconnect_{i}', display, color))
+            buttons.append(None)
+            buttons.append(('new_network', '+ Nieuw netwerk', COLORS['bg_elevated']))
+            self._draw_menu_screen('WiFi', buttons)
+        
+        elif ctx.menu_state == MenuState.WIFI_AP:
+            self._draw_menu_screen('WiFi', [], close_label='Terug',
+                                   message='Verbind met Berry-Setup')
+        
+        else:
+            buttons = [
+                ('wifi', 'WiFi', COLORS['accent']),
+                ('library', 'Wis bibliotheek', COLORS['accent']),
+                None,
+                ('auto_pause', f'Auto-pauze: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
+                ('progress_expiry', f'Onthouden: {ctx.progress_expiry_hours} uur', COLORS['bg_elevated']),
+            ]
+            self._draw_menu_screen('Instellingen', buttons)
+        
+        self._needs_full_redraw = True
+    
+    def _draw_menu_screen(self, title: str, buttons: list,
+                          close_label: str = 'Sluiten', message: Optional[str] = None):
+        """Draw a menu screen with consistent layout.
+        
+        buttons: list of (id, label, color) tuples. None entries add extra spacing.
+        """
+        self.menu_button_rects = {}
+        H, GAP, W, Y = self._MENU_BTN_H, self._MENU_BTN_GAP, self._MENU_BTN_W, self._MENU_BTN_Y
+        
+        title_surf = self._render_text_rotated(title, self.font_large, COLORS['text_primary'])
+        self.screen.blit(title_surf, title_surf.get_rect(center=(self._MENU_TITLE_X, CAROUSEL_CENTER_Y)))
+        
+        if message:
+            msg_surf = self._render_text_rotated(message, self.font_medium, COLORS['text_secondary'])
+            self.screen.blit(msg_surf, msg_surf.get_rect(center=(self._MENU_TOP_X, CAROUSEL_CENTER_Y)))
+        
+        x = self._MENU_TOP_X
+        for entry in buttons:
+            if entry is None:
+                x -= GAP
+                continue
+            btn_id, label, color = entry
+            btn = pygame.Rect(x, Y, H, W)
+            self._draw_menu_button(btn, label, color)
+            self.menu_button_rects[btn_id] = btn
+            x -= H + GAP
+        
+        x -= GAP
+        close_btn = pygame.Rect(max(20, x), Y, H, W)
+        self._draw_menu_button(close_btn, close_label, COLORS['bg_elevated'])
+        self.menu_button_rects['close'] = close_btn
+    
+    def _draw_menu_button(self, rect: pygame.Rect, label: str, bg_color: tuple,
+                          text_color: Optional[tuple] = None):
+        """Draw a rounded rectangle button with rotated label."""
+        text_color = text_color or COLORS['text_primary']
+        pygame.draw.rect(self.screen, bg_color, rect, border_radius=18)
+        text_surf = self._render_text_rotated(label, self.font_medium, text_color)
+        self.screen.blit(text_surf, text_surf.get_rect(center=rect.center))
 

@@ -2,17 +2,22 @@
 Berry Utilities - Shared helper functions.
 """
 import sys
+import atexit
 import subprocess
-import threading
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
+_executor = ThreadPoolExecutor(max_workers=4)
+atexit.register(_executor.shutdown, wait=False)
+
 
 def run_async(fn, *args):
-    """Fire-and-forget async execution in daemon thread.
+    """Fire-and-forget async execution in a bounded thread pool.
 
     Wraps function to catch and log exceptions.
+    Max 4 concurrent background tasks — safe for Raspberry Pi.
     """
     def wrapper():
         try:
@@ -20,7 +25,31 @@ def run_async(fn, *args):
         except Exception as e:
             logger.warning(f'Async task {fn.__name__} failed: {e}', exc_info=True)
 
-    threading.Thread(target=wrapper, daemon=True).start()
+    _executor.submit(wrapper)
+
+
+_wm8960_card: str | None = None
+
+
+def _find_wm8960_card() -> str:
+    """Find the ALSA card number for the WM8960 Audio HAT."""
+    global _wm8960_card
+    if _wm8960_card is not None:
+        return _wm8960_card
+    try:
+        result = subprocess.run(
+            ['aplay', '-l'], capture_output=True, text=True
+        )
+        for line in result.stdout.splitlines():
+            if 'wm8960' in line.lower():
+                _wm8960_card = line.split(':')[0].split()[-1]
+                logger.info(f'WM8960 Audio HAT found on card {_wm8960_card}')
+                return _wm8960_card
+    except Exception:
+        pass
+    _wm8960_card = '2'
+    logger.warning('WM8960 not found in aplay -l, falling back to card 2')
+    return _wm8960_card
 
 
 def set_system_volume(speaker_level: int, headphone_level: int):
@@ -28,23 +57,18 @@ def set_system_volume(speaker_level: int, headphone_level: int):
     if sys.platform != 'linux':
         return
     try:
-        # WM8960 Audio HAT on card 2
-        # Playback = master DAC volume, keep at 100%
-        # Speaker/Headphone = amplifier volumes, set independently
+        card = _find_wm8960_card()
         subprocess.run(
-            ['amixer', '-c', '2', 'set', 'Playback', '100%'],
-            capture_output=True,
-            check=True
+            ['amixer', '-c', card, 'set', 'Playback', '100%'],
+            capture_output=True, check=True
         )
         subprocess.run(
-            ['amixer', '-c', '2', 'set', 'Speaker', f'{speaker_level}%'],
-            capture_output=True,
-            check=True
+            ['amixer', '-c', card, 'set', 'Speaker', f'{speaker_level}%'],
+            capture_output=True, check=True
         )
         subprocess.run(
-            ['amixer', '-c', '2', 'set', 'Headphone', f'{headphone_level}%'],
-            capture_output=True,
-            check=True
+            ['amixer', '-c', card, 'set', 'Headphone', f'{headphone_level}%'],
+            capture_output=True, check=True
         )
     except (subprocess.SubprocessError, FileNotFoundError) as e:
         logger.debug(f'Could not set system volume: {e}')

@@ -1,21 +1,26 @@
 [Unit]
 Description=Berry Music Player
-After=network-online.target berry-librespot.service
-Wants=network-online.target
-Requires=berry-librespot.service
+After=berry-touch-fix.service
+Wants=berry-librespot.service
 
 [Service]
 Type=simple
-User=admin
-WorkingDirectory=/home/admin/berry
-ExecStartPre=-/bin/rm -f /home/admin/berry/berry.log
-ExecStart=/home/admin/berry/venv/bin/python -u berry.py --fullscreen
+User=berry
+SupplementaryGroups=video audio input render
+WorkingDirectory=/home/berry/berry
+ExecStartPre=-/bin/rm -f /home/berry/berry/berry.log
+ExecStart=/home/berry/berry/venv/bin/python -u berry.py --fullscreen
 Restart=always
 RestartSec=5
 TimeoutStopSec=5
-StandardOutput=append:/home/admin/berry/berry.log
-StandardError=append:/home/admin/berry/berry.log
-Environment=HOME=/home/admin
+StandardOutput=append:/home/berry/berry/berry.log
+StandardError=append:/home/berry/berry/berry.log
+StandardInput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+PAMName=login
+Environment=HOME=/home/berry
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 
 [Install]

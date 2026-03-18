@@ -139,7 +139,7 @@ class EvdevTouchHandler:
                             pygame.MOUSEBUTTONDOWN,
                             {'pos': pos, 'button': 1}
                         ))
-                        logger.info(f'Touch DOWN at {pos}')
+                        logger.debug(f'Touch DOWN at {pos}')
                     
                     elif event.value == 0:  # Touch up
                         self._touching = False
@@ -147,7 +147,7 @@ class EvdevTouchHandler:
                             pygame.MOUSEBUTTONUP,
                             {'pos': pos, 'button': 1}
                         ))
-                        logger.info(f'Touch UP at {pos}')
+                        logger.debug(f'Touch UP at {pos}')
                 
                 # Handle touch move (SYN_REPORT indicates end of event batch)
                 elif event.type == ecodes.EV_SYN and self._touching:

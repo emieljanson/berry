@@ -5,7 +5,7 @@
 
 set -e
 
-PI_HOST="admin@berry.local"
+PI_HOST="berry@berry.local"
 PI_DIR="~/berry"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -29,13 +29,18 @@ while [[ "$#" -gt 0 ]]; do
         -v|--verbose) VERBOSE=true ;;
         -p|--profile) PROFILE=true ;;
         -T|--skip-tests) SKIP_TESTS=true ;;
+        --host)
+            shift
+            PI_HOST="berry@$1"
+            ;;
         -h|--help)
-            echo "Usage: ./dev-pi.sh [-v|--verbose] [-p|--profile] [-T|--skip-tests]"
+            echo "Usage: ./dev-pi.sh [-v|--verbose] [-p|--profile] [-T|--skip-tests] [--host IP]"
             echo ""
             echo "Options:"
             echo "  -v, --verbose     Show all logs (INFO + DEBUG)"
             echo "  -p, --profile     Enable frame profiler (shows render timing)"
             echo "  -T, --skip-tests  Skip running tests before sync"
+            echo "  --host IP         Target a specific Pi by IP (e.g. --host 192.168.1.152)"
             echo ""
             echo "Commands while running:"
             echo "  r, Enter  Sync files and restart app"
@@ -168,7 +173,7 @@ restart_app() {
     else
         echo -e "${RED}✗ Failed to start${NC}"
         ssh $PI_HOST "sudo journalctl -u berry-native -n 10 --no-pager" 2>/dev/null || true
-        ssh $PI_HOST "tail -10 /home/admin/berry/berry.log" 2>/dev/null || true
+        ssh $PI_HOST "tail -10 /home/berry/berry/berry.log" 2>/dev/null || true
     fi
 }
 
@@ -177,7 +182,7 @@ start_logs() {
     kill $LOG_PID 2>/dev/null || true
     sleep 0.2
     
-    ssh $PI_HOST 'tail -f /home/admin/berry/berry.log 2>/dev/null' 2>/dev/null | while IFS= read -r line; do
+    ssh $PI_HOST 'tail -f /home/berry/berry/berry.log 2>/dev/null' 2>/dev/null | while IFS= read -r line; do
         if [ "$VERBOSE" = true ]; then
             # Verbose mode: show everything, just add colors
             case "$line" in
@@ -220,6 +225,7 @@ start_logs() {
                         *"Connected"*|*"CONNECTION"*|*"Disconnected"*|\
                         *"SIGTERM"*|*"SIGINT"*|*"shutting down"*|*"Shutdown"*|\
                         *"TempItem"*|*"Syncing"*|*"Context"*|\
+                        *"Backlight"*|*"DRM DPMS"*|*"display control"*|*"Display"*|\
                         *"profiler"*|*"PROFILER"*|*"GPU"*|*"SOFTWARE"*)
                             echo -e "${CYAN}$line${NC}"
                             ;;
@@ -289,7 +295,7 @@ if systemctl is-active --quiet berry-native; then
 else
     echo "✗ Berry failed"
     sudo journalctl -u berry-native -n 5 --no-pager
-    cat /home/admin/berry/berry.log 2>/dev/null || true
+    cat /home/berry/berry/berry.log 2>/dev/null || true
 fi
 ENDSSH
 
@@ -332,7 +338,7 @@ while true; do
             l)
                 echo ""
                 echo -e "${CYAN}━━━ Recent logs ━━━${NC}"
-                ssh $PI_HOST 'tail -20 /home/admin/berry/berry.log' 2>/dev/null
+                ssh $PI_HOST 'tail -20 /home/berry/berry/berry.log' 2>/dev/null
                 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━${NC}"
                 echo ""
                 ;;

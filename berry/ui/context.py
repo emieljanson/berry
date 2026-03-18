@@ -1,10 +1,10 @@
 """
 Render Context - Bundles all state needed for rendering.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List
 
-from ..models import CatalogItem, NowPlaying
+from ..models import CatalogItem, MenuState, NowPlaying
 
 
 @dataclass
@@ -17,11 +17,15 @@ class RenderContext:
     drag_offset: float
     dragging: bool
     is_sleeping: bool
-    connected: bool
     volume_index: int
     delete_mode_id: Optional[str]
     pressed_button: Optional[str]
     is_loading: bool
     is_playing: bool  # What to show for play/pause button
-    needs_setup: bool
+    toast_message: Optional[str] = None
+    menu_state: MenuState = MenuState.CLOSED
+    menu_known_networks: List[str] = field(default_factory=list)
+    menu_current_network: Optional[str] = None
+    auto_pause_minutes: int = 30
+    progress_expiry_hours: int = 48
 
