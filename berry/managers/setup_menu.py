@@ -115,10 +115,11 @@ class SetupMenu:
                 if ret == 0:
                     logger.info('wifi-connect exited (code=0)')
                     self._on_toast('WiFi verbonden!')
+                    self.close()
                 else:
                     logger.info(f'wifi-connect exited (code={ret})')
                     self._reconnect_to_known_network()
-                self.close()
+                    self._show_wifi_screen()
 
     # ------------------------------------------------------------------
     # Private helpers

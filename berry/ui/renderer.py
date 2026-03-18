@@ -592,14 +592,14 @@ class Renderer:
         title_surf = self._render_text_rotated(title, self.font_large, COLORS['text_primary'])
         self.screen.blit(title_surf, title_surf.get_rect(center=(self._MENU_TITLE_X, CAROUSEL_CENTER_Y)))
         
+        x = self._MENU_TOP_X
+        
         if lines:
-            line_x = self._MENU_TOP_X
             for line in lines:
                 surf = self._render_text_rotated(line, self.font_medium, COLORS['text_secondary'])
-                self.screen.blit(surf, surf.get_rect(center=(line_x, CAROUSEL_CENTER_Y)))
-                line_x -= 35
-        
-        x = self._MENU_TOP_X
+                self.screen.blit(surf, surf.get_rect(center=(x, CAROUSEL_CENTER_Y)))
+                x -= 35
+            x -= GAP
         for entry in buttons:
             if entry is None:
                 x -= GAP
