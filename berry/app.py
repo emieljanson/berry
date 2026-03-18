@@ -770,12 +770,6 @@ class Berry:
             logger.debug('Touch down: carousel swipe start')
             self.touch.on_down(pos)
             self.user_interacting = True
-            self.play_timer.cancel()
-            self.playback.cancel_pending()
-            
-            # Pause immediately when scrolling starts
-            if self.now_playing.playing and not self.mock_mode:
-                self.playback.pause_for_navigation(self.now_playing.context_uri)
         else:
             logger.debug('Touch down: outside carousel')
             self._handle_button_tap(pos)
@@ -897,28 +891,27 @@ class Berry:
     
     def _snap_to(self, target_index: int):
         """Snap carousel to a specific index.
-        
-        Only handles carousel movement. Playback decisions (play timer,
-        resume, pause) happen when the carousel settles in _update().
-        This prevents race conditions during rapid swiping.
+
+        When the index changes this is the single point where playback
+        is interrupted: timer cancelled, running play-thread invalidated,
+        and instant silence sent to librespot.
         """
         items = self.display_items
         if not items:
             return
-        
+
         target_index = max(0, min(target_index, len(items) - 1))
-        
+
         if target_index != self.selected_index:
             old_index = self.selected_index
             self.selected_index = target_index
             self.carousel.set_target(target_index)
-            
-            # Pause if navigating away from playing item (handles keyboard nav)
+
+            self.play_timer.cancel()
+            self.playback.stop_all()
             if self.now_playing.playing and not self.mock_mode:
-                old_item = items[old_index] if old_index < len(items) else None
-                if old_item and self._is_item_playing(old_item):
-                    self.playback.pause_for_navigation(self.now_playing.context_uri)
-            
+                run_async(self.api.pause)
+
             item = items[target_index]
             logger.debug(f'Snap: {old_index} -> {target_index}, item={item.name}')
         else:
@@ -941,7 +934,14 @@ class Berry:
         """Save progress, mark as user action, then skip prev/next."""
         self.playback.last_user_play_time = time.time()
         self.playback.save_progress(self.now_playing, force=True)
-        run_async(api_fn)
+
+        def _do_skip():
+            if not api_fn():
+                time.sleep(1)
+                if not api_fn():
+                    self._show_toast('Niet verbonden')
+
+        run_async(_do_skip)
 
     def _toggle_play(self):
         """Toggle play/pause."""
@@ -1200,17 +1200,12 @@ class Berry:
         was_animating = not self.carousel.settled
         self.carousel.update(dt)
         
-        # When carousel settles: decide what to play (single source of truth)
-        # Skip until startup is complete — librespot needs time after boot
+        # When carousel settles: start play timer if item isn't already playing
         if was_animating and self.carousel.settled and not self.touch.dragging and self._startup_ready:
             item = items[self.selected_index] if self.selected_index < len(items) else None
-            if item and not item.is_temp:
-                if (self.playback.paused_for_navigation and
-                    self.playback.paused_context_uri == item.uri):
-                    self.playback.resume_from_navigation()
-                elif not self._is_item_playing(item):
-                    logger.info(f'PlayTimer starting for: {item.name} (index={self.selected_index})')
-                    self.play_timer.start(item)
+            if item and not item.is_temp and not self._is_item_playing(item):
+                logger.info(f'PlayTimer starting for: {item.name} (index={self.selected_index})')
+                self.play_timer.start(item)
         
         # Check long press for delete mode
         if self.touch.check_long_press():
@@ -1244,22 +1239,13 @@ class Berry:
         
         item_to_play = self.play_timer.check()
         if item_to_play:
-            # Safety: verify the timer item is still the focused item
             focused_item = items[self.selected_index] if self.selected_index < len(items) else None
             if not focused_item or focused_item.uri != item_to_play.uri:
                 logger.warning(f'PlayTimer fired for stale item: timer={item_to_play.name}, '
                              f'focused={focused_item.name if focused_item else "none"}')
             else:
-                logger.info(f'PlayTimer fired: item={item_to_play.name}, uri={item_to_play.uri[:50]}..., '
-                           f'selected_index={self.selected_index}, carousel_pos={self.carousel.scroll_x:.2f}')
-                if (self.playback.paused_for_navigation and
-                    self.playback.paused_context_uri == item_to_play.uri):
-                    logger.info('  -> Resuming (paused for nav)')
-                    self.playback.resume_from_navigation()
-                else:
-                    logger.info('  -> Auto-playing NEW')
-                    self.playback.clear_navigation_pause()
-                    self._play_item(item_to_play.uri)
+                logger.info(f'PlayTimer fired: item={item_to_play.name}, uri={item_to_play.uri[:50]}...')
+                self._play_item(item_to_play.uri)
         
         self._sync_to_playing()
         

@@ -1,5 +1,5 @@
 """
-Playback Controller - Manages play/pause/resume, progress, and navigation pause.
+Playback Controller - Manages play/pause/resume and progress.
 
 Extracted from Berry.app to keep playback logic isolated and testable.
 """
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class PlaybackController:
-    """Owns play/pause/resume, progress tracking, and navigation pause."""
+    """Owns play/pause/resume and progress tracking."""
 
     def __init__(
         self,
@@ -39,14 +39,14 @@ class PlaybackController:
         self._on_invalidate = on_invalidate or (lambda: None)
         self._on_resume = on_resume or (lambda: None)
 
-        # Play request queuing (non-blocking, latest wins)
+        # Play request queuing (non-blocking, latest wins).
+        # _play_generation is an incrementing counter; each _execute_play
+        # thread captures its generation at start and bails out whenever
+        # the current generation has moved on (i.e. stop_all was called).
         self._play_lock = threading.Lock()
         self._play_in_progress = False
         self._pending_play: Optional[tuple] = None
-
-        # Navigation pause (pause when swiping away from playing item)
-        self._paused_for_navigation = False
-        self._paused_context_uri: Optional[str] = None
+        self._play_generation = 0
 
         # UI loading/spinner state
         self.play_state = PlayState()
@@ -65,14 +65,6 @@ class PlaybackController:
         self.mock_position = 0
         self.mock_duration = 180000
 
-    @property
-    def paused_for_navigation(self) -> bool:
-        return self._paused_for_navigation
-
-    @property
-    def paused_context_uri(self) -> Optional[str]:
-        return self._paused_context_uri
-
     def is_item_playing(self, item: CatalogItem, now_playing: NowPlaying) -> bool:
         """Check if an item is currently playing."""
         return item.uri == now_playing.context_uri
@@ -82,13 +74,10 @@ class PlaybackController:
         if not items:
             return
 
-        self._paused_for_navigation = False
-        self._paused_context_uri = None
-
         if now_playing.playing:
             logger.info('Pausing...')
+            self.stop_all()
             self.play_state.set_pending('pause')
-            self._play_in_progress = False
             self._on_invalidate()
             run_async(self.api.pause)
         elif now_playing.paused:
@@ -116,34 +105,18 @@ class PlaybackController:
 
         run_async(self._execute_play, uri, from_beginning)
 
-    def cancel_pending(self):
-        """Cancel any pending play requests (e.g. when user starts new swipe)."""
-        with self._play_lock:
-            self._pending_play = None
+    def stop_all(self):
+        """Invalidate any running or pending play requests.
 
-    def pause_for_navigation(self, context_uri: str):
-        """Pause playback when user swipes away from playing item.
-        
-        Idempotent: only sends one pause API call per navigation sequence.
+        Bumps the generation counter so that any in-flight _execute_play
+        thread will notice it is stale and bail out.  Does NOT force
+        _play_in_progress to False — only the thread itself does that in
+        its finally block, which avoids two threads running simultaneously.
         """
-        if self._paused_for_navigation:
-            return
-        logger.info('Pausing for navigation...')
-        self._paused_for_navigation = True
-        self._paused_context_uri = context_uri
-        run_async(self.api.pause)
-
-    def resume_from_navigation(self):
-        """Resume playback when user returns to the paused item."""
-        logger.info('Resuming (returned to item)')
-        self._paused_for_navigation = False
-        self._paused_context_uri = None
-        run_async(self.api.resume)
-
-    def clear_navigation_pause(self):
-        """Clear the navigation pause state without resuming."""
-        self._paused_for_navigation = False
-        self._paused_context_uri = None
+        with self._play_lock:
+            self._play_generation += 1
+            self._pending_play = None
+        self.play_state.clear()
 
     def check_autoplay(self, now_playing: NowPlaying):
         """Detect autoplay and clear progress when context finishes naturally."""
@@ -201,21 +174,11 @@ class PlaybackController:
     def update_loading_state(self, now_playing: NowPlaying, carousel_settled: bool,
                              play_timer_active: bool):
         """Update the loading/spinner state each frame."""
-        if self._paused_for_navigation:
-            if carousel_settled and not play_timer_active and not self._play_in_progress:
-                self._paused_for_navigation = False
-                self._paused_context_uri = None
-
         if self.play_state.pending_action == 'pause':
             self.play_state.stop_loading()
             return
 
-        should_load = (
-            self._paused_for_navigation or
-            play_timer_active or
-            self._play_in_progress
-        )
-        if should_load:
+        if play_timer_active or self._play_in_progress:
             self.play_state.start_loading()
         else:
             self.play_state.stop_loading()
@@ -234,8 +197,20 @@ class PlaybackController:
     # ------------------------------------------------------------------
 
     def _execute_play(self, uri: str, from_beginning: bool):
-        """Execute the play request (runs in thread pool)."""
-        logger.info(f'Execute play: context_uri={uri[:50]}..., from_beginning={from_beginning}')
+        """Execute the play request (runs in thread pool).
+
+        Captures _play_generation at start so it can bail out early when
+        stop_all() has been called (generation moves on).
+        """
+        with self._play_lock:
+            my_gen = self._play_generation
+
+        logger.info(f'Execute play [gen={my_gen}]: context_uri={uri[:50]}..., from_beginning={from_beginning}')
+
+        def _stale() -> bool:
+            with self._play_lock:
+                return self._play_generation != my_gen
+
         try:
             self.volume.ensure_spotify_at_100()
 
@@ -251,41 +226,49 @@ class PlaybackController:
 
             need_seek = saved_progress and saved_progress.get('position', 0) > 0
 
-            # Retry a few times — librespot may still be authenticating after restart.
-            # play() returns True (ok), None (no session), or False (transient failure).
             result = False
-            max_attempts = 4
-            retry_delay = 3  # seconds between attempts
+            max_attempts = 5
+            retry_delay = 4
             for attempt in range(1, max_attempts + 1):
+                if _stale():
+                    logger.info(f'  Play cancelled (gen={my_gen}), aborting')
+                    return
                 result = self.api.play(uri, skip_to_uri=skip_to_uri, paused=need_seek)
                 logger.info(f'  Play request attempt {attempt}/{max_attempts}: result={result}')
                 if result is True:
                     break
-                if result is None:
-                    # librespot explicitly says no active session — no point retrying
-                    logger.warning('  No active Spotify session, stopping retries')
-                    break
                 if attempt < max_attempts:
                     self.play_state.start_loading()
-                    time.sleep(retry_delay)
+                    for _ in range(8):
+                        if _stale():
+                            logger.info(f'  Play cancelled during retry wait (gen={my_gen})')
+                            return
+                        time.sleep(0.5)
+
+            if _stale():
+                return
 
             success = result is True
             if not success:
                 self.play_state.clear()
-                if result is None:
-                    # Only show the toast when librespot confirms there's no session
-                    self._on_toast('Verbind via Spotify')
+                self._on_toast('Verbind via Spotify')
 
             if success and need_seek:
+                if _stale():
+                    return
                 position = saved_progress['position']
                 if self.api.seek(position):
                     logger.info(f'Seeked to {position // 1000}s')
                 self.api.resume()
                 logger.info('  Resumed after seek')
+
+            if success:
+                self.play_state.stop_loading()
         finally:
             with self._play_lock:
                 self._play_in_progress = False
-                pending = self._pending_play
+                stale = self._play_generation != my_gen
+                pending = self._pending_play if not stale else None
                 self._pending_play = None
 
             if pending:
