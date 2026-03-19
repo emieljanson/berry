@@ -7,7 +7,7 @@ import logging
 
 from ..config import VOLUME_LEVELS
 from ..api.librespot import LibrespotAPIProtocol
-from ..utils import run_async, set_system_volume
+from ..utils import run_async, set_system_volume, mute_speakers, unmute_speakers
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ class VolumeController:
         self.api = api
         self.index = 1
         self._spotify_initialized = False
+        self._muted = False
     
     @property
     def speaker_level(self) -> int:
@@ -38,6 +39,8 @@ class VolumeController:
     def init(self):
         """Initialize system volume at startup."""
         set_system_volume(self.speaker_level, self.headphone_level)
+        unmute_speakers(self.speaker_level, self.headphone_level)
+        self._muted = False
     
     def toggle(self):
         """Cycle through volume levels."""
@@ -45,6 +48,22 @@ class VolumeController:
         logger.info(f'Volume: speaker={self.speaker_level}%, headphone={self.headphone_level}%')
         run_async(set_system_volume, self.speaker_level, self.headphone_level)
     
+    def mute(self):
+        """Mute audio output instantly via ALSA hardware. No-op if already muted."""
+        if self._muted:
+            return
+        self._muted = True
+        mute_speakers()
+        logger.debug('Speaker muted')
+
+    def unmute(self):
+        """Restore audio output via ALSA hardware. No-op if not muted."""
+        if not self._muted:
+            return
+        self._muted = False
+        unmute_speakers(self.speaker_level, self.headphone_level)
+        logger.debug('Speaker unmuted')
+
     def ensure_spotify_at_100(self) -> bool:
         """Ensure Spotify volume is at 100% (call on first play). Returns True if set."""
         if not self._spotify_initialized:

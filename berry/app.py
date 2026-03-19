@@ -20,11 +20,14 @@ from .config import (
     CAROUSEL_X, CAROUSEL_CENTER_Y, CONTROLS_X, BTN_SIZE, PLAY_BTN_SIZE, BTN_SPACING,
     CAROUSEL_TOUCH_MARGIN, MAX_SWIPE_JUMP, VELOCITY_THRESHOLDS,
     ACTION_DEBOUNCE, BUTTON_PRESS_DURATION, MENU_HOLD_TIME,
+    CONTEXT_SWITCH_WATCHDOG_TIMEOUT,
+    POSTHOG_API_KEY, POSTHOG_HOST, ANALYTICS_DISTINCT_ID,
+    ANALYTICS_INCLUDE_CONTENT, ANALYTICS_USE_MACHINE_ID,
 )
 from .models import CatalogItem, NowPlaying, LibrespotStatus
 from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
-from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings
+from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker
 from .controllers import VolumeController, PlaybackController
 from .ui import ImageCache, Renderer, RenderContext
 from .utils import run_async
@@ -173,8 +176,17 @@ class Berry:
         self.play_timer = PlayTimer()
         self.perf_monitor = PerformanceMonitor()
         self.volume = VolumeController(self.api)
+        # Usage analytics
+        self.tracker = UsageTracker(
+            api_key=POSTHOG_API_KEY,
+            host=POSTHOG_HOST,
+            distinct_id=ANALYTICS_DISTINCT_ID,
+            include_content=ANALYTICS_INCLUDE_CONTENT,
+            use_machine_id=ANALYTICS_USE_MACHINE_ID,
+        )
+        
         self.auto_pause = AutoPauseManager(
-            on_pause=lambda: run_async(self.api.pause),
+            on_pause=lambda: (self.tracker.on_auto_pause(), run_async(self.api.pause)),
             get_volume=lambda: (self.volume.speaker_level, self.volume.headphone_level),
             get_timeout=lambda: self.settings.auto_pause_timeout,
         )
@@ -188,6 +200,9 @@ class Berry:
             on_toast=self._show_toast,
             on_invalidate=lambda: self.renderer.invalidate(),
             on_resume=self.auto_pause.restore_volume_if_needed,
+            is_request_current=self._is_play_request_current,
+            on_play_committed=self._on_play_committed,
+            on_play_failed=self._on_play_failed,
         )
         
         # State (with thread-safe now_playing and connected)
@@ -200,6 +215,7 @@ class Berry:
         self._connection_grace_threshold = 3
         self._running = threading.Event()
         self._running.set()
+        self._poll_wake_event = threading.Event()
         
         # TempItem and delete mode (with lock for thread-safe access)
         self.temp_item: Optional[CatalogItem] = None
@@ -207,6 +223,42 @@ class Berry:
         self.delete_mode_id: Optional[str] = None
         self._saving = False
         self._deleting = False
+        
+        # True while user is actively controlling playback (swipe/play).
+        # While True, _sync_to_playing only accepts confirmation of our own play request.
+        # While False, _sync_to_playing accepts anything (external Spotify control).
+        self._user_driving = False
+        self._user_driving_since: float = 0.0
+        self._focus_epoch: int = 0
+        self._pending_focus_uri: Optional[str] = None
+        self._pending_focus_since: float = 0.0
+        self._pending_external_focus_uri: Optional[str] = None
+        self._last_focus_gate_log: float = 0.0
+        self._requested_focus_epoch: Optional[int] = None
+        self._requested_focus_uri: Optional[str] = None
+        self._requested_focus_since: float = 0.0
+        self._last_requested_hold_log: float = 0.0
+        self._last_title_diag_log: float = 0.0
+        self._last_status_ok_at: float = 0.0
+        # True when status is temporarily unknown (timeout/error). While unknown
+        # we keep the last known now_playing snapshot and block auto-retrigger.
+        self._status_unknown: bool = False
+        self._last_status_unknown_log: float = 0.0
+        self._last_status_not_ready_log: float = 0.0
+        self._user_activated_playback: bool = False
+        self._last_play_commit_uri: Optional[str] = None
+        self._last_play_commit_at: float = 0.0
+        self._last_snap_pause_at: float = 0.0
+        self._last_restore_handled_at: float = 0.0
+        self._restore_dedup_count: int = 0
+        # Blocks auto-play after an explicit user pause until user gives a
+        # positive play intent (play tap or context switch).
+        self._manual_pause_lock: bool = False
+        self._manual_pause_context_uri: Optional[str] = None
+        self._autoplay_stall_since: float = 0.0
+        self._last_autoplay_stall_log: float = 0.0
+        self._context_switch_stall_since: float = 0.0
+        self._last_context_watchdog_log: float = 0.0
         
         # Interaction tracking
         self.user_interacting = False
@@ -277,6 +329,217 @@ class Berry:
         self._toast_time = time.time()
         self.renderer.invalidate()
 
+    def _bump_focus_epoch(self, reason: str):
+        """Increment focus epoch so stale play responses can be ignored."""
+        self._focus_epoch += 1
+        self._requested_focus_epoch = None
+        self._requested_focus_uri = None
+        self._requested_focus_since = 0.0
+        logger.info(f'Focus epoch -> {self._focus_epoch} ({reason})')
+
+    def _current_focused_uri(self) -> Optional[str]:
+        """Return currently focused URI, or None."""
+        items = self.display_items
+        if not items or self.selected_index >= len(items):
+            return None
+        return items[self.selected_index].uri
+
+    def _is_play_request_current(self, epoch: int, uri: str) -> bool:
+        """True when play response still matches latest focus intent."""
+        return epoch == self._focus_epoch and uri == self._current_focused_uri()
+
+    def _has_active_user_focus_intent(self) -> bool:
+        """True while user intent should block remote context focus sync."""
+        requested_focus_active = (
+            self._requested_focus_epoch == self._focus_epoch and
+            self._requested_focus_uri is not None
+        )
+        return (
+            self.touch.dragging
+            or self._user_driving
+            or self.play_timer.item is not None
+            or requested_focus_active
+        )
+
+    def _should_prioritize_remote_focus(self, focused_item: Optional[CatalogItem]) -> bool:
+        """True when playing context should win over focused auto-play request."""
+        if not focused_item:
+            return False
+        if not self.now_playing.playing:
+            return False
+        playing_ctx = self.now_playing.context_uri
+        if not playing_ctx:
+            return False
+        if playing_ctx == focused_item.uri:
+            return False
+        return not self._has_active_user_focus_intent()
+
+    def _focus_on_uri_without_interrupt(self, context_uri: str, reason: str) -> bool:
+        """Move focus to context URI without interrupting playback."""
+        items = self.display_items
+        if not items:
+            return False
+        target_index = next((i for i, item in enumerate(items) if item.uri == context_uri), None)
+        if target_index is None:
+            return False
+        if target_index == self.selected_index:
+            return True
+
+        old_index = self.selected_index
+        self.selected_index = target_index
+        self.carousel.set_target(target_index)
+        self._bump_focus_epoch(f'{reason} {old_index}->{target_index}')
+        self._reset_pending_focus()
+        self._pending_external_focus_uri = None
+        self._user_driving = False
+        self.renderer.invalidate()
+        logger.info(
+            'SYNC applied | remote focus moved '
+            f'{old_index}->{target_index} | ctx={context_uri[:40]}'
+        )
+        return True
+
+    def _set_manual_pause_lock(self, reason: str):
+        """Block auto-play until explicit positive user intent."""
+        self._manual_pause_lock = True
+        self._manual_pause_context_uri = self.now_playing.context_uri
+        logger.info(
+            f'Manual pause lock set ({reason}) | '
+            f'ctx={(self._manual_pause_context_uri or "none")[:40]}'
+        )
+
+    def _clear_manual_pause_lock(self, reason: str):
+        """Allow auto-play again after explicit user intent."""
+        if self._manual_pause_lock:
+            logger.info(
+                f'Manual pause lock cleared ({reason}) | '
+                f'ctx={(self._manual_pause_context_uri or "none")[:40]}'
+            )
+        self._manual_pause_lock = False
+        self._manual_pause_context_uri = None
+
+    def _display_title_for_item(self, item: Optional[CatalogItem]) -> tuple[str, str]:
+        """Return (title_source, title_text) used by renderer track header."""
+        if not item:
+            return ('none', '')
+        if (self.now_playing.context_uri == item.uri and
+                self.now_playing.track_name and
+                (self.now_playing.playing or self.now_playing.paused)):
+            return ('now_playing', self.now_playing.track_name)
+        return ('none', '')
+
+    def _on_play_committed(self, uri: str, epoch: int):
+        """Called by PlaybackController when a play request is accepted."""
+        self._user_driving = False
+        # Keep requested marker until status confirms focused context is active.
+        # This prevents duplicate re-requests while /status lags behind.
+        self.playback.last_context_uri = uri
+        self._last_play_commit_uri = uri
+        self._last_play_commit_at = time.time()
+        logger.info(f'Play committed: uri={uri[:40]} epoch={epoch}')
+
+    def _on_play_failed(self, uri: str, epoch: int):
+        """Called by PlaybackController when play request failed."""
+        # Keep requested marker after a failed attempt so update-loop does not
+        # instantly fire the same request again. Retry happens via stale-timeout.
+        if self._requested_focus_epoch == epoch and self._requested_focus_uri == uri and self._requested_focus_since <= 0:
+            self._requested_focus_since = time.time()
+        if self._is_play_request_current(epoch, uri):
+            self._user_driving = False
+            logger.warning(f'Play failed for current focus: uri={uri[:40]} epoch={epoch}')
+        else:
+            logger.info(f'Play failed for stale request: uri={uri[:40]} epoch={epoch}')
+
+    def _reset_pending_focus(self, reason: str = ''):
+        """Clear pending focus-stability request timer."""
+        if self._pending_focus_uri and reason:
+            logger.debug(
+                f'Pending focus cleared | reason={reason} '
+                f'| uri={self._pending_focus_uri[:40]}'
+            )
+        self._pending_focus_uri = None
+        self._pending_focus_since = 0.0
+
+    def _reset_context_switch_watchdog(self):
+        """Clear context-switch watchdog timer."""
+        self._context_switch_stall_since = 0.0
+
+    def _trigger_context_switch_watchdog(self, focused_item: CatalogItem, stall_age: float):
+        """Fail-safe when context-switch loading appears stuck for too long."""
+        logger.error(
+            'WATCHDOG tripped | context-switch stuck -> hard silent stop | '
+            f'age={stall_age:.1f}s | focused="{focused_item.name}" | '
+            f'focused_uri={focused_item.uri[:40]} | spotify_ctx={(self.now_playing.context_uri or "none")[:40]} | '
+            f'connected={self.connected} | status_unknown={self._status_unknown} | '
+            f'pending_focus={(self._pending_focus_uri or "none")[:40]} | '
+            f'requested_uri={(self._requested_focus_uri or "none")[:40]} | '
+            f'requested_epoch={self._requested_focus_epoch} | focus_epoch={self._focus_epoch}'
+        )
+        self.playback.stop_all()
+        self.playback.last_context_uri = None
+        self._reset_pending_focus('watchdog_trip')
+        self._pending_external_focus_uri = None
+        self._requested_focus_epoch = None
+        self._requested_focus_uri = None
+        self._requested_focus_since = 0.0
+        self._user_driving = False
+        self._user_driving_since = 0.0
+        self.volume.mute()
+        run_async(self.api.pause)
+        self._show_toast('Laden afgebroken, probeer opnieuw')
+
+    def _check_context_switch_watchdog(self, focused_item: Optional[CatalogItem]):
+        """Detect and break out of a stuck context-switch loading state."""
+        if focused_item is None or focused_item.is_temp:
+            self._reset_context_switch_watchdog()
+            return
+
+        focused_uri = focused_item.uri
+        requested_current_focus = (
+            self._requested_focus_epoch == self._focus_epoch
+            and self._requested_focus_uri == focused_uri
+        )
+        waiting_for_switch_commit = (
+            self.playback.play_in_progress
+            or self.playback.play_state.should_show_loading
+            or self._pending_focus_uri == focused_uri
+            or requested_current_focus
+        )
+        context_mismatch = bool(
+            self.now_playing.context_uri
+            and self.now_playing.context_uri != focused_uri
+        )
+        stalled_switch = (
+            self._user_activated_playback
+            and not self._manual_pause_lock
+            and not self._is_item_playing(focused_item)
+            and (waiting_for_switch_commit or (self._user_driving and context_mismatch))
+        )
+
+        if not stalled_switch:
+            self._reset_context_switch_watchdog()
+            return
+
+        now = time.time()
+        if self._context_switch_stall_since <= 0.0:
+            self._context_switch_stall_since = now
+            return
+
+        stall_age = now - self._context_switch_stall_since
+        if stall_age >= CONTEXT_SWITCH_WATCHDOG_TIMEOUT:
+            self._trigger_context_switch_watchdog(focused_item, stall_age)
+            self._reset_context_switch_watchdog()
+            return
+
+        if now - self._last_context_watchdog_log > 5.0:
+            logger.warning(
+                'WATCHDOG armed | waiting for context-switch commit | '
+                f'age={stall_age:.1f}s/{CONTEXT_SWITCH_WATCHDOG_TIMEOUT:.0f}s | '
+                f'focused_uri={focused_uri[:40]} | spotify_ctx={(self.now_playing.context_uri or "none")[:40]} | '
+                f'waiting_for_commit={waiting_for_switch_commit} | user_driving={self._user_driving}'
+            )
+            self._last_context_watchdog_log = now
+
     def _on_library_cleared(self):
         """Reset in-memory state after library clear (called by SetupMenu)."""
         self.catalog_manager.load()
@@ -326,12 +589,13 @@ class Berry:
     def _on_ws_update(self):
         """Called when WebSocket receives an event."""
         logger.debug(f'WebSocket event, context: {self.events.context_uri}')
+        if self.sleep_manager.is_sleeping:
+            self._poll_wake_event.set()
     
     def _on_ws_reconnect(self):
         """Called when WebSocket reconnects after disconnect."""
         logger.info('WebSocket reconnected - refreshing state')
         self._connection_fail_count = 0
-        self.connected = True
         run_async(self._refresh_status)
     
     @property
@@ -391,6 +655,7 @@ class Berry:
     def start(self):
         """Start the application."""
         logger.info('Starting Berry...')
+        self.tracker.on_app_started(catalog_size=len(self.catalog_manager.items))
         
         # Pre-load images
         self.image_cache.preload_catalog(self.catalog_manager.items)
@@ -399,7 +664,7 @@ class Berry:
             self.events.start()
             self.catalog_manager.cleanup_unused_images()
             
-            # Set system volume at startup
+            # Set system volume at startup (also unmutes as safety reset)
             self.volume.init()
             
             # Start status polling
@@ -439,11 +704,17 @@ class Berry:
             target_fps = self._target_fps()
             is_animating = not self.carousel.settled or self.touch.dragging
             
-            dt = self.clock.tick(target_fps) / 1000.0
+            if target_fps <= 5 and not is_animating:
+                # Idle: true sleep instead of busy-wait, CPU can idle
+                frame_start = time.time()
+                pygame.time.wait(200)
+                dt = time.time() - frame_start
+            else:
+                dt = self.clock.tick(target_fps) / 1000.0
             
             target_frame_time = 1.0 / target_fps
             spike_threshold = max(0.1, target_frame_time * 1.2)
-            if dt > spike_threshold:
+            if dt > spike_threshold and target_fps > 5:
                 logger.warning(f'Frame spike: {dt*1000:.0f}ms (target: {target_fps} FPS)')
             
             self.perf_monitor.update(dt, is_animating)
@@ -452,6 +723,7 @@ class Berry:
         # Save progress before shutdown
         logger.info('Shutting down...')
         self._save_progress_on_shutdown()
+        self.tracker.on_shutdown()
         
         # Restore display before exit so next boot doesn't start with black screen
         if self.sleep_manager.is_sleeping:
@@ -485,8 +757,30 @@ class Berry:
         self._last_fps_log = now
         avg_fps = self.perf_monitor.current_fps
         is_loading = self.playback.play_state.is_loading
+        items = self.display_items
+        focused = items[self.selected_index].name if items and self.selected_index < len(items) else '?'
+        playing_ctx = self.now_playing.context_uri or 'none'
+        playing_name = self.now_playing.track_name or 'none'
+        api_metrics = self.api.metrics_snapshot() if hasattr(self.api, 'metrics_snapshot') else {}
+        suppressed = api_metrics.get('suppressed', {})
+        failures = api_metrics.get('failures', {})
         
-        logger.info(f'FPS: {avg_fps:.1f} | connected={self.connected} | playing={self.now_playing.playing} | loading={is_loading} | target={target_fps}')
+        logger.info(
+            f'STATE | focused="{focused}" | playing="{playing_name}" | ctx={playing_ctx[:40]} '
+            f'| driving={self._user_driving} | loading={is_loading} | connected={self.connected} '
+            f'| fps={avg_fps:.0f}/{target_fps} | restore_dedup={self._restore_dedup_count} '
+            f'| api_suppressed={suppressed} | api_failures={failures}'
+        )
+
+        focused_uri = items[self.selected_index].uri if items and self.selected_index < len(items) else None
+        if (self.now_playing.playing and focused_uri and playing_ctx
+                and focused_uri != playing_ctx and not is_loading and not self._user_driving):
+            logger.warning(
+                f'MISMATCH | screen="{focused}" | audio="{playing_name}" '
+                f'| focused_uri={focused_uri[:40]} | playing_ctx={playing_ctx[:40]} '
+                f'| last_ctx={self.playback.last_context_uri} | interacting={self.user_interacting} '
+                f'| settled={self.carousel.settled} | timer={self.play_timer.item is not None}'
+            )
         
         if not self.sleep_manager.is_sleeping:
             if target_fps == 60 and avg_fps < 30:
@@ -497,16 +791,27 @@ class Berry:
                 logger.warning(f'Low FPS while idle: {avg_fps:.1f} (target: 5 FPS)')
     
     def _poll_status(self):
-        """Poll librespot status in background."""
+        """Poll librespot status in background.
+        
+        Intervals adapt to state: fast when disconnected, slow when idle,
+        near-zero during sleep (WebSocket can signal instant wake via
+        _poll_wake_event).
+        """
         was_fast_polling = False
         while self.running:
+            # During sleep: wait up to 30s, but wake instantly on WS signal
+            if self.sleep_manager.is_sleeping:
+                self._poll_wake_event.wait(timeout=30)
+                self._poll_wake_event.clear()
+                if not self.running:
+                    break
+            
             try:
                 self._refresh_status()
             except Exception as e:
-                # Handle connection errors with grace period
                 self._connection_fail_count += 1
                 if self._connection_fail_count >= self._connection_grace_threshold:
-                    if self.connected:  # Only log once
+                    if self.connected:
                         logger.error(f'Status poll error: {e}')
                     self.connected = False
             
@@ -519,8 +824,14 @@ class Berry:
                     logger.debug('Normal polling mode (connected)')
                 was_fast_polling = is_fast_polling
             
-            poll_interval = 0.5 if is_fast_polling else 1.0
-            time.sleep(poll_interval)
+            if is_fast_polling:
+                poll_interval = 0.5
+            elif not self.now_playing.playing:
+                poll_interval = 3.0
+            else:
+                poll_interval = 1.0
+            self._poll_wake_event.wait(timeout=poll_interval)
+            self._poll_wake_event.clear()
     
     def _refresh_status(self):
         """Refresh playback status from librespot."""
@@ -542,13 +853,35 @@ class Berry:
         # Log connection state changes
         if was_connected != self.connected:
             if self.connected:
-                logger.info(f'CONNECTION RESTORED (was disconnected)')
+                now = time.time()
+                if now - self._last_restore_handled_at < 0.5:
+                    self._restore_dedup_count += 1
+                    logger.info(f'CONNECTION RESTORED deduped (count={self._restore_dedup_count})')
+                else:
+                    self._last_restore_handled_at = now
+                    logger.info(f'CONNECTION RESTORED (was disconnected)')
+                    self._startup_ready = True
+                    self.playback.retry_failed()
+                self._startup_ready = True
             else:
                 logger.warning(f'CONNECTION LOST after {self._connection_fail_count} failures')
             logger.info(f'  fail_count={self._connection_fail_count}, status={raw is not None}')
         
         if raw and isinstance(raw, dict):
-            status = LibrespotStatus.from_dict(raw, context_uri=self.events.context_uri)
+            self._last_status_ok_at = time.time()
+            self._status_unknown = False
+            api_context_uri = raw.get('context_uri')
+            ws_context_uri = self.events.context_uri
+            if api_context_uri and ws_context_uri and api_context_uri != ws_context_uri:
+                logger.warning(
+                    'CONTEXT source mismatch | '
+                    f'api_ctx={api_context_uri[:40]} | ws_ctx={ws_context_uri[:40]} | '
+                    f'track="{(raw.get("track") or {}).get("name") if isinstance(raw.get("track"), dict) else "none"}"'
+                )
+            status = LibrespotStatus.from_dict(raw, context_uri=ws_context_uri)
+
+            old_ctx = self.now_playing.context_uri
+            old_playing = self.now_playing.playing
             
             self.now_playing = NowPlaying(
                 playing=status.playing,
@@ -559,12 +892,26 @@ class Berry:
                 track_artist=status.track_artist,
                 track_album=status.track_album,
                 track_cover=status.track_cover,
+                track_uri=status.track_uri,
                 position=status.position,
                 duration=status.duration,
             )
-            
-            self.playback.play_state.pending_action = None
-            
+
+            if status.context_uri != old_ctx or status.playing != old_playing:
+                state = 'playing' if status.playing else ('paused' if status.paused else 'stopped')
+                logger.info(f'SPOTIFY changed | {state} "{status.track_name}" | ctx={status.context_uri or "none"}')
+
+            pending_action = self.playback.play_state.pending_action
+            if pending_action == 'pause':
+                if status.paused or status.stopped or not status.playing:
+                    self.playback.play_state.pending_action = None
+                    logger.info('pending_action_cleared | action=pause | status_ack=not_playing')
+                else:
+                    logger.info('pending_action_hold | action=pause | waiting_status_ack=playing')
+            elif pending_action == 'play' and status.playing:
+                self.playback.play_state.pending_action = None
+                logger.info('pending_action_cleared | action=play | status_ack=playing')
+            self.tracker.update(self.now_playing)
             
             self._update_temp_item()
             self._check_autoplay()
@@ -579,8 +926,16 @@ class Berry:
             elif status.paused or status.stopped:
                 self.auto_pause.on_stop()
         else:
-            self.now_playing = NowPlaying()
-            self.auto_pause.on_stop()
+            # Transport/timeout errors are "unknown", not "stopped".
+            # Keep last known now_playing to avoid duplicate play re-triggers.
+            self._status_unknown = True
+            now = time.time()
+            if now - self._last_status_unknown_log > 3.0:
+                logger.warning(
+                    'STATUS unknown | preserving last now_playing snapshot '
+                    f'| connected={self.connected} | fail_count={self._connection_fail_count}'
+                )
+                self._last_status_unknown_log = now
     
     def _check_autoplay(self):
         """Detect autoplay and clear progress when context finishes."""
@@ -696,6 +1051,7 @@ class Berry:
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 logger.debug(f'Event: MOUSEBUTTONDOWN at {event.pos}')
                 if self.sleep_manager.is_sleeping:
+                    self._user_activated_playback = True
                     self.sleep_manager.wake_up()
                     self._on_wake()
                     continue
@@ -704,6 +1060,7 @@ class Berry:
             
             elif event.type == pygame.KEYDOWN:
                 if self.sleep_manager.is_sleeping:
+                    self._user_activated_playback = True
                     self.sleep_manager.wake_up()
                     self._on_wake()
                     continue
@@ -728,6 +1085,7 @@ class Berry:
     
     def _handle_key(self, key):
         """Handle keyboard input."""
+        self._user_activated_playback = True
         if key == pygame.K_ESCAPE:
             self.running = False
         elif key == pygame.K_LEFT:
@@ -743,6 +1101,7 @@ class Berry:
     
     def _handle_touch_down(self, pos):
         """Handle touch/mouse down."""
+        self._user_activated_playback = True
         # Menu intercept — all taps handled by menu when open
         if self.setup_menu.is_open:
             self.setup_menu.handle_tap(pos, self.renderer.menu_button_rects)
@@ -906,14 +1265,29 @@ class Berry:
             old_index = self.selected_index
             self.selected_index = target_index
             self.carousel.set_target(target_index)
+            self._bump_focus_epoch(f'snap {old_index}->{target_index}')
+            self._reset_pending_focus('snap_focus_changed')
+            self._clear_manual_pause_lock('focus_changed')
 
             self.play_timer.cancel()
             self.playback.stop_all()
-            if self.now_playing.playing and not self.mock_mode:
+            self.playback.last_context_uri = None
+            self.volume.mute()
+            now = time.time()
+            should_pause_remote = (
+                now - self._last_snap_pause_at > 0.4 and
+                (self.now_playing.playing or self.playback.has_pending_play)
+            )
+            if should_pause_remote:
+                self._last_snap_pause_at = now
                 run_async(self.api.pause)
+            self._user_driving = True
+            self._user_driving_since = time.time()
 
             item = items[target_index]
-            logger.debug(f'Snap: {old_index} -> {target_index}, item={item.name}')
+            if not item.is_temp and not self._is_item_playing(item):
+                self.playback.play_state.start_loading()
+            logger.info(f'Snap: {old_index} -> {target_index}, item={item.name}, _user_driving=True')
         else:
             self.carousel.set_target(target_index)
     
@@ -945,9 +1319,24 @@ class Berry:
 
     def _toggle_play(self):
         """Toggle play/pause."""
+        self._user_activated_playback = True
         if self.mock_mode:
             self._toggle_mock_play()
             return
+        if self.now_playing.playing or self.playback.has_pending_play:
+            self._set_manual_pause_lock('pause_tap')
+        else:
+            self._clear_manual_pause_lock('play_tap')
+        items = self.display_items
+        if self.now_playing.paused and items and self.selected_index < len(items):
+            focused_item = items[self.selected_index]
+            if not focused_item.is_temp:
+                logger.info(
+                    'Paused state: forcing focused context play '
+                    f'(focused={focused_item.uri[:40]}, paused_ctx={(self.now_playing.context_uri or "none")[:40]})'
+                )
+                self._play_item(focused_item.uri)
+                return
         self.playback.toggle_play(self.display_items, self.selected_index, self.now_playing)
     
     def _toggle_mock_play(self):
@@ -960,6 +1349,7 @@ class Berry:
             self.now_playing = NowPlaying(
                 playing=True,
                 context_uri=item.uri,
+                track_uri=ct.get('uri') if ct else None,
                 track_name=ct.get('name', item.name) if ct else item.name,
                 track_artist=ct.get('artist', item.artist) if ct else item.artist,
                 position=self.playback.mock_position,
@@ -970,21 +1360,28 @@ class Berry:
     
     def _play_item(self, uri: str, from_beginning: bool = False):
         """Queue a play request via the playback controller."""
+        logger.warning(f'PLAY enqueue | uri={uri[:40]} | epoch={self._focus_epoch} | from_beginning={from_beginning}')
+        self._user_driving = True
+        self._user_driving_since = time.time()
         if self.now_playing.context_uri and self.now_playing.context_uri != uri:
             self.playback.save_progress(self.now_playing, force=True)
-        self.playback.play_item(uri, from_beginning)
+        self.playback.play_item(uri, from_beginning, self._focus_epoch)
     
     def _on_wake(self):
         """Called when waking from sleep - reconnect and reset state."""
+        self._user_driving = False
+        self._reset_pending_focus('play_enqueued')
+        self.tracker.on_wake()
         logger.info('=' * 40)
         logger.info('WAKE UP START')
         logger.info(f'  Connection state: {self.connected}')
         logger.info(f'  Fail count: {self._connection_fail_count}')
         logger.info(f'  Playing: {self.now_playing.playing}')
         
-        # Reset connection state for immediate reconnect
+        # Mark disconnected so CONNECTION RESTORED fires on next successful poll,
+        # which triggers retry_failed() for any play request that timed out.
         self._connection_fail_count = 0
-        self.connected = True  # Optimistic - will correct on next poll if wrong
+        self.connected = False
         
         # Force immediate status refresh in background
         def wake_refresh():
@@ -1111,6 +1508,7 @@ class Berry:
                 if self.display_items:
                     new_index = min(new_index, len(self.display_items) - 1)
                     self.selected_index = new_index
+                    self._bump_focus_epoch(f'delete select -> {new_index}')
                     self.carousel.scroll_x = float(new_index)
                     self.carousel.set_target(new_index)
                     
@@ -1155,40 +1553,71 @@ class Berry:
             logger.debug(f'Cover collection failed: {e}')
     
     def _sync_to_playing(self):
-        """Sync carousel to currently playing item."""
+        """Sync carousel to currently playing item.
+
+        While _user_driving is True (user recently swiped/played), only accept
+        confirmation of our own play request. While False, accept anything
+        (external Spotify control, autoplay).
+        """
         items = self.display_items
-        if not items or self.user_interacting:
+        if not items:
             return
-        
-        if self.play_timer.item or not self.carousel.settled:
-            return
-        
-        if self.play_timer.is_in_cooldown():
-            return
-        
+
         context_uri = self.now_playing.context_uri
-        if not context_uri or context_uri == self.playback.last_context_uri:
+        if not context_uri:
+            self._pending_external_focus_uri = None
             return
-        
-        if context_uri == self.play_timer.last_played_uri:
-            self.play_timer.last_played_uri = None
+
+        focused = items[self.selected_index].name if self.selected_index < len(items) else '?'
+        focused_uri = items[self.selected_index].uri if self.selected_index < len(items) else None
+        logger.info(
+            f'SYNC check | spotify={context_uri[:40]} | focused="{focused}" '
+            f'| driving={self._user_driving} | epoch={self._focus_epoch}'
+        )
+
+        if focused_uri == context_uri:
+            self._pending_external_focus_uri = None
             self.playback.last_context_uri = context_uri
-            return
-        
-        playing_index = next((i for i, item in enumerate(items) if item.uri == context_uri), None)
-        if playing_index is None:
+            if (
+                self.now_playing.playing
+                and not self.playback.has_pending_play
+                and not self._manual_pause_lock
+                and not self.playback.pause_intent_active
+            ):
+                self.volume.unmute()
+            elif self.now_playing.playing and (self._manual_pause_lock or self.playback.pause_intent_active):
+                logger.info(
+                    'unmute_guard_blocked | reason=pause_intent_or_manual_lock '
+                    f'| manual_pause_lock={self._manual_pause_lock} | '
+                    f'pause_intent_active={self.playback.pause_intent_active}'
+                )
+            logger.info('SYNC ok | focused context already matches Spotify')
             return
 
-        if playing_index >= len(items):
-            logger.debug(f'Sync index out of bounds: {playing_index} >= {len(items)}')
+        if not self.now_playing.playing:
+            self._pending_external_focus_uri = None
+            logger.info('SYNC hold | spotify not playing, skip focus sync')
             return
 
-        if playing_index != self.selected_index:
-            logger.info(f'Syncing to: {items[playing_index].name}')
-            self.selected_index = playing_index
-            self.carousel.set_target(playing_index)
+        if self._has_active_user_focus_intent():
+            self._pending_external_focus_uri = context_uri
+            logger.info(
+                'SYNC blocked | active user intent, deferring remote focus '
+                f'ctx={context_uri[:40]}'
+            )
+            return
 
-        self.playback.last_context_uri = context_uri
+        # Safe remote sync path: move UI focus only, never pause/mute/stop playback.
+        target_uri = self._pending_external_focus_uri or context_uri
+        if self._focus_on_uri_without_interrupt(target_uri, reason='remote_sync'):
+            return
+
+        # If item not yet available (e.g. temp item not materialized), keep pending.
+        self._pending_external_focus_uri = target_uri
+        logger.info(
+            'SYNC pending | remote context not in display_items yet '
+            f'ctx={target_uri[:40]}'
+        )
     
     def _update(self, dt: float):
         """Update application state."""
@@ -1200,12 +1629,148 @@ class Berry:
         was_animating = not self.carousel.settled
         self.carousel.update(dt)
         
-        # When carousel settles: start play timer if item isn't already playing
-        if was_animating and self.carousel.settled and not self.touch.dragging and self._startup_ready:
-            item = items[self.selected_index] if self.selected_index < len(items) else None
-            if item and not item.is_temp and not self._is_item_playing(item):
-                logger.info(f'PlayTimer starting for: {item.name} (index={self.selected_index})')
-                self.play_timer.start(item)
+        focused_item = items[self.selected_index] if self.selected_index < len(items) else None
+        if self._manual_pause_lock and self._manual_pause_context_uri:
+            active_ctx = self.now_playing.context_uri
+            if active_ctx and active_ctx != self._manual_pause_context_uri:
+                if self.playback.pause_intent_active:
+                    logger.info(
+                        'Manual pause lock retained (active_context_changed) | '
+                        'reason=pause_intent_active'
+                    )
+                else:
+                    self._clear_manual_pause_lock('active_context_changed')
+
+        # Focus-stable request policy:
+        # - mute immediately on swipe (_snap_to)
+        # - only request play when drag is finished, carousel is settled,
+        #   focus remained unchanged for 1s, and we're connected.
+        status_ready = (time.time() - self._last_status_ok_at) < 4.0 and not self._status_unknown
+        paused_focused_context = (
+            focused_item is not None
+            and self.now_playing.paused
+            and self.now_playing.context_uri == focused_item.uri
+        )
+        prioritize_remote_focus = self._should_prioritize_remote_focus(focused_item)
+        if prioritize_remote_focus:
+            # Prevent the focused auto-play loop from overriding active remote playback.
+            self._reset_pending_focus('prioritize_remote_focus')
+            if self._requested_focus_uri == (focused_item.uri if focused_item else None):
+                self._requested_focus_epoch = None
+                self._requested_focus_uri = None
+                self._requested_focus_since = 0.0
+        stable_ready = (
+            self._startup_ready
+            and self.connected
+            and (status_ready or paused_focused_context)
+            and not prioritize_remote_focus
+            and self._user_activated_playback
+            and not self._manual_pause_lock
+            and not self.playback.pause_intent_active
+            and self.carousel.settled
+            and not self.touch.dragging
+            and focused_item is not None
+            and not focused_item.is_temp
+        )
+
+        if stable_ready:
+            if self._is_item_playing(focused_item):
+                self._reset_pending_focus('focused_item_already_playing')
+                self._requested_focus_epoch = None
+                self._requested_focus_uri = None
+                self._requested_focus_since = 0.0
+                self.volume.unmute()
+            elif not self.playback.play_in_progress:
+                now = time.time()
+                focused_uri = focused_item.uri
+                hold_current_request = False
+                if (self._requested_focus_epoch == self._focus_epoch and
+                        self._requested_focus_uri == focused_uri):
+                    # Already requested this exact focus/epoch; wait for status confirmation.
+                    # If confirmation never arrives, allow a controlled retry.
+                    request_age = now - self._requested_focus_since
+                    if request_age < 12.0:
+                        hold_current_request = True
+                        if self._pending_focus_uri != focused_uri:
+                            self._pending_focus_uri = focused_uri
+                            self._pending_focus_since = now
+                        if now - self._last_requested_hold_log > 2.5:
+                            logger.warning(
+                                'PLAY hold | waiting status confirmation '
+                                f'age={request_age:.1f}s | focused_uri={focused_uri[:40]} '
+                                f'| epoch={self._focus_epoch} | spotify_ctx={(self.now_playing.context_uri or "none")[:40]} '
+                                f'| spotify_playing={self.now_playing.playing} | loading={self.playback.play_state.is_loading}'
+                            )
+                            self._last_requested_hold_log = now
+                    else:
+                        logger.warning(
+                            f'PLAY request stale for {request_age:.1f}s, retrying same focus '
+                            f'uri={focused_uri[:40]} epoch={self._focus_epoch}'
+                        )
+                        self._requested_focus_epoch = None
+                        self._requested_focus_uri = None
+                        self._requested_focus_since = 0.0
+                if not hold_current_request:
+                    if self._pending_focus_uri != focused_uri:
+                        self._pending_focus_uri = focused_uri
+                        self._pending_focus_since = now
+                        logger.info(f'Focus stable timer start: {focused_item.name} (1s)')
+                    elif now - self._pending_focus_since >= 1.0:
+                        logger.info(f'Focus stable 1s -> play request: {focused_item.name}')
+                        self._requested_focus_epoch = self._focus_epoch
+                        self._requested_focus_uri = focused_uri
+                        self._requested_focus_since = now
+                        self._play_item(focused_uri)
+                        self._reset_pending_focus('request_sent_after_1s_dwell')
+        else:
+            # Throttled diagnostics: why focus-gate is blocking play requests.
+            now = time.time()
+            if now - self._last_focus_gate_log > 3.0:
+                reason = (
+                    f'startup_ready={self._startup_ready}, connected={self.connected}, '
+                    f'status_ready={(time.time() - self._last_status_ok_at) < 4.0 and not self._status_unknown}, '
+                    f'status_unknown={self._status_unknown}, '
+                    f'user_activated={self._user_activated_playback}, '
+                    f'manual_pause_lock={self._manual_pause_lock}, '
+                    f'settled={self.carousel.settled}, dragging={self.touch.dragging}, '
+                    f'focused_item={focused_item.name if focused_item else None}, '
+                    f'is_temp={focused_item.is_temp if focused_item else None}'
+                )
+                logger.warning(f'PLAY gate blocked | {reason}')
+                self._last_focus_gate_log = now
+            elif self._startup_ready and self.connected and (
+                self._status_unknown or (now - self._last_status_ok_at) >= 4.0
+            ):
+                if now - self._last_status_not_ready_log > 3.0:
+                    logger.warning(
+                        'STATUS not ready for play | '
+                        f'last_ok_age={now - self._last_status_ok_at:.1f}s | '
+                        f'status_unknown={self._status_unknown} | '
+                        f'focused_uri={(focused_item.uri if focused_item else "none")[:40]}'
+                    )
+                    self._last_status_not_ready_log = now
+            keep_pending_feedback = (
+                focused_item is not None
+                and not focused_item.is_temp
+                and not self._is_item_playing(focused_item)
+                and self._requested_focus_epoch == self._focus_epoch
+                and self._requested_focus_uri == focused_item.uri
+            )
+            if keep_pending_feedback:
+                if self._pending_focus_uri != focused_item.uri:
+                    self._pending_focus_uri = focused_item.uri
+                    self._pending_focus_since = now
+                request_age = now - self._requested_focus_since
+                if request_age >= 12.0 and not self.playback.play_in_progress:
+                    logger.warning(
+                        f'Clearing stale requested focus while gated (age={request_age:.1f}s, '
+                        f'uri={focused_item.uri[:40]}, epoch={self._focus_epoch})'
+                    )
+                    self._requested_focus_epoch = None
+                    self._requested_focus_uri = None
+                    self._requested_focus_since = 0.0
+            else:
+                self._reset_pending_focus('stable_gate_blocked')
         
         # Check long press for delete mode
         if self.touch.check_long_press():
@@ -1215,7 +1780,7 @@ class Berry:
         self.user_interacting = (
             self.touch.dragging or 
             not self.carousel.settled or 
-            self.play_timer.item is not None
+            self._pending_focus_uri is not None
         )
         
         self.setup_menu.update()
@@ -1236,16 +1801,6 @@ class Berry:
         if self._pressed_button and not self._volume_hold_start and time.time() - self._pressed_time > BUTTON_PRESS_DURATION:
             self._pressed_button = None
             self.renderer.invalidate()
-        
-        item_to_play = self.play_timer.check()
-        if item_to_play:
-            focused_item = items[self.selected_index] if self.selected_index < len(items) else None
-            if not focused_item or focused_item.uri != item_to_play.uri:
-                logger.warning(f'PlayTimer fired for stale item: timer={item_to_play.name}, '
-                             f'focused={focused_item.name if focused_item else "none"}')
-            else:
-                logger.info(f'PlayTimer fired: item={item_to_play.name}, uri={item_to_play.uri[:50]}...')
-                self._play_item(item_to_play.uri)
         
         self._sync_to_playing()
         
@@ -1270,11 +1825,99 @@ class Berry:
         else:
             self._cover_collect_context = None
         
+        was_awake = not self.sleep_manager.is_sleeping
         self.sleep_manager.check_sleep(self.now_playing.playing)
+        if was_awake and self.sleep_manager.is_sleeping:
+            idle = time.time() - self.sleep_manager.last_activity
+            self.tracker.on_sleep(idle)
         
         self.playback.update_loading_state(
-            self.now_playing, self.carousel.settled, self.play_timer.item is not None
+            self.now_playing, self.carousel.settled, self._pending_focus_uri is not None
         )
+        self._check_context_switch_watchdog(focused_item)
+
+        # Root-cause detector: focus is stable and should auto-play, but no request path exists.
+        if focused_item is not None and not focused_item.is_temp:
+            focused_uri = focused_item.uri
+            auto_intent_ready = (
+                self._startup_ready
+                and self.connected
+                and self._user_activated_playback
+                and not self._manual_pause_lock
+                and not self.playback.pause_intent_active
+                and self.carousel.settled
+                and not self.touch.dragging
+            )
+            focus_is_playing = self._is_item_playing(focused_item)
+            requested_current_focus = (
+                self._requested_focus_epoch == self._focus_epoch
+                and self._requested_focus_uri == focused_uri
+            )
+            has_active_play_path = (
+                self.playback.play_in_progress
+                or self._pending_focus_uri == focused_uri
+                or requested_current_focus
+            )
+            if auto_intent_ready and not focus_is_playing and not has_active_play_path:
+                now = time.time()
+                if self._autoplay_stall_since <= 0.0:
+                    self._autoplay_stall_since = now
+                stall_age = now - self._autoplay_stall_since
+                if stall_age >= 1.5 and now - self._last_autoplay_stall_log > 2.0:
+                    logger.warning(
+                        'AUTOPLAY stall | focus stable but no active play path | '
+                        f'stall_age={stall_age:.1f}s | focused="{focused_item.name}" | '
+                        f'focused_uri={focused_uri[:40]} | spotify_ctx={(self.now_playing.context_uri or "none")[:40]} | '
+                        f'spotify_playing={self.now_playing.playing} | spotify_paused={self.now_playing.paused} | '
+                        f'loading={self.playback.play_state.is_loading} | play_in_progress={self.playback.play_in_progress} | '
+                        f'pending_focus={(self._pending_focus_uri or "none")[:40]} | '
+                        f'requested_uri={(self._requested_focus_uri or "none")[:40]} | '
+                        f'requested_epoch={self._requested_focus_epoch} | focus_epoch={self._focus_epoch}'
+                    )
+                    self._last_autoplay_stall_log = now
+            else:
+                self._autoplay_stall_since = 0.0
+
+        # Detect "should be loading but loader disappeared" condition.
+        if focused_item is not None and not focused_item.is_temp:
+            expected_loading = (
+                not self._is_item_playing(focused_item)
+                and (
+                    self.playback.play_in_progress
+                    or self._pending_focus_uri == focused_item.uri
+                    or (
+                        self._requested_focus_epoch == self._focus_epoch
+                        and self._requested_focus_uri == focused_item.uri
+                    )
+                )
+            )
+            if expected_loading and not self.playback.play_state.is_loading:
+                logger.warning(
+                    'LOADER mismatch | expected_loading=True but is_loading=False | '
+                    f'focused_uri={focused_item.uri[:40]} | pending_uri={(self._pending_focus_uri or "none")[:40]} | '
+                    f'requested_uri={(self._requested_focus_uri or "none")[:40]} | '
+                    f'play_in_progress={self.playback.play_in_progress} | epoch={self._focus_epoch}'
+                )
+
+        # Diagnostics for "title above context is wrong while loading/resume"
+        # Keep throttled to avoid log spam.
+        now = time.time()
+        if now - self._last_title_diag_log > 2.0 and focused_item is not None:
+            title_source, title_text = self._display_title_for_item(focused_item)
+            logger.warning(
+                'TITLE diag | '
+                f'focused="{focused_item.name}" | title="{title_text}" | source={title_source} | '
+                f'focused_uri={(focused_item.uri or "none")[:40]} | spotify_ctx={(self.now_playing.context_uri or "none")[:40]} | '
+                f'spotify_track="{self.now_playing.track_name or "none"}" | loading={self.playback.play_state.is_loading} | '
+                f'play_in_progress={self.playback.play_in_progress} | pending_focus={(self._pending_focus_uri or "none")[:40]} | '
+                f'requested_uri={(self._requested_focus_uri or "none")[:40]} | requested_epoch={self._requested_focus_epoch}'
+            )
+            if not (self.now_playing.playing or self.now_playing.paused) and title_source != 'none':
+                logger.warning(
+                    'TITLE mismatch | expected_source=none while inactive | '
+                    f'actual_source={title_source} | focused="{focused_item.name}" | title="{title_text}"'
+                )
+            self._last_title_diag_log = now
     
     # ============================================
     # SETUP MENU
@@ -1296,10 +1939,25 @@ class Berry:
     
     def _draw(self):
         """Draw the UI."""
+        items = self.display_items
+        np = self.now_playing
+        focused_item = items[self.selected_index] if self.selected_index < len(items) else None
+        focused_uri = focused_item.uri if focused_item else None
+        focused_context_playing = bool(
+            focused_item
+            and np.playing
+            and np.context_uri == focused_uri
+        )
+        recent_focus_commit = bool(
+            focused_uri
+            and self._last_play_commit_uri == focused_uri
+            and (time.time() - self._last_play_commit_at) < 1.25
+        )
+
         ctx = RenderContext(
-            items=self.display_items,
+            items=items,
             selected_index=self.selected_index,
-            now_playing=self.now_playing,
+            now_playing=np,
             scroll_x=self.carousel.scroll_x,
             drag_offset=self.touch.drag_offset,
             dragging=self.touch.dragging,
@@ -1307,8 +1965,12 @@ class Berry:
             volume_index=self.volume.index,
             delete_mode_id=self.delete_mode_id,
             pressed_button=self._pressed_button,
-            is_loading=self.playback.play_state.is_loading,
-            is_playing=self.playback.play_state.display_playing(self.now_playing.playing),
+            # Hide loader as soon as focused context audio is already playing.
+            is_loading=self.playback.play_state.is_loading and not (focused_context_playing or recent_focus_commit),
+            is_playing=self.playback.play_state.display_playing(np.playing),
+            pending_focus_uri=self._pending_focus_uri,
+            requested_focus_uri=self._requested_focus_uri,
+            play_in_progress=self.playback.play_in_progress,
             toast_message=self._active_toast,
             menu_state=self.setup_menu.state,
             menu_known_networks=self.setup_menu.known_networks,

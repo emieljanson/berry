@@ -708,6 +708,20 @@ class CatalogManager:
 
         try:
             progress_data = self._load_progress_data()
+            position = max(0, int(position or 0))
+            existing = progress_data.get(context_uri) if isinstance(progress_data, dict) else None
+
+            if isinstance(existing, dict) and existing.get('uri') == track_uri:
+                existing_position = max(0, int(existing.get('position', 0) or 0))
+                regressed = existing_position - position
+                if regressed > 2000:
+                    # Reject stale regressions (especially accidental 0s) for same track.
+                    logger.info(
+                        'progress_write_rejected | reason=position_regression | '
+                        f'context_uri={context_uri[:40]} | track_uri={track_uri[:40]} | '
+                        f'old_pos={existing_position // 1000}s | new_pos={position // 1000}s'
+                    )
+                    return
 
             entry = {
                 'uri': track_uri,
@@ -766,6 +780,10 @@ class CatalogManager:
             if context_uri in progress_data:
                 del progress_data[context_uri]
                 self._save_progress_data(progress_data)
+                for mem_item in self.items:
+                    if mem_item.uri == context_uri:
+                        mem_item.current_track = None
+                        break
                 logger.debug(f'Cleared progress for: {context_uri[:40]}')
 
         except Exception as e:

@@ -5,6 +5,15 @@ import os
 import sys
 from pathlib import Path
 
+# Load .env file (secrets stay out of git)
+_env_path = Path(__file__).parent.parent / '.env'
+if _env_path.exists():
+    for line in _env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            key, _, value = line.partition('=')
+            os.environ.setdefault(key.strip(), value.strip())
+
 # ============================================
 # SCREEN & DISPLAY (Portrait mode - pre-rotated UI)
 # ============================================
@@ -122,9 +131,10 @@ VOLUME_LEVELS = [
 
 SLEEP_TIMEOUT = 120.0  # 2 minutes of inactivity
 PLAY_TIMER_DELAY = 1.0  # seconds before auto-play
-SYNC_COOLDOWN = 3.0  # Block sync for 3s after play timer fires
+SYNC_COOLDOWN = 5.0  # Block sync for 5s after play timer fires
 PROGRESS_SAVE_INTERVAL = 10  # Save progress every 10 seconds
 PROGRESS_EXPIRY_HOURS = 48  # Expire saved progress after 48 hours
+CONTEXT_SWITCH_WATCHDOG_TIMEOUT = 60.0  # Hard failsafe for stuck context-switch loading
 
 # ============================================
 # TOUCH & GESTURES
@@ -146,6 +156,16 @@ MENU_HOLD_TIME = 3.0      # Seconds to hold volume button to open setup menu
 
 AUTO_PAUSE_TIMEOUT = 30 * 60  # 30 minutes in seconds
 AUTO_PAUSE_FADE_DURATION = 5.0  # Fade out over 5 seconds
+
+# ============================================
+# ANALYTICS (PostHog)
+# ============================================
+
+POSTHOG_API_KEY = os.environ.get('POSTHOG_API_KEY', '')
+POSTHOG_HOST = os.environ.get('POSTHOG_HOST', 'https://us.i.posthog.com')
+ANALYTICS_DISTINCT_ID = os.environ.get('ANALYTICS_DISTINCT_ID', '').strip()
+ANALYTICS_INCLUDE_CONTENT = os.environ.get('ANALYTICS_INCLUDE_CONTENT', '0').lower() in ('1', 'true', 'yes')
+ANALYTICS_USE_MACHINE_ID = os.environ.get('ANALYTICS_USE_MACHINE_ID', '0').lower() in ('1', 'true', 'yes')
 
 # ============================================
 # PERFORMANCE

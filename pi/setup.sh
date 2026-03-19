@@ -2,7 +2,7 @@
 # Berry First-Time Setup Script
 # Run this ONCE on a new Raspberry Pi (Lite or Desktop)
 
-set -uo pipefail
+set -euo pipefail
 echo "🍓 Berry Setup Starting..."
 echo ""
 
@@ -210,12 +210,23 @@ sudo systemctl enable berry-librespot berry-native berry-touch-fix
 # 9. Setup permissions (display, audio, touch, backlight)
 # ============================================
 echo "🔐 Setting up permissions..."
-sudo usermod -aG video,audio,input "$USER" 2>/dev/null || true
+
+# Ensure dedicated runtime group exists for Berry-controlled hardware nodes.
+if ! getent group berry >/dev/null; then
+  sudo groupadd --system berry
+fi
+
+# Keep berry runtime user and current setup user in required groups.
+sudo usermod -aG video,audio,input,berry "$USER" 2>/dev/null || true
+if id berry >/dev/null 2>&1; then
+  sudo usermod -aG video,audio,input,berry berry 2>/dev/null || true
+fi
 
 # Backlight control (for sleep mode) — udev rule + apply immediately
-echo 'SUBSYSTEM=="backlight", RUN+="/bin/chmod 666 /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power"' \
+echo 'SUBSYSTEM=="backlight", RUN+="/bin/chgrp berry /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power", RUN+="/bin/chmod 660 /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power"' \
   | sudo tee /etc/udev/rules.d/99-backlight.rules > /dev/null
-sudo chmod 666 /sys/class/backlight/*/bl_power /sys/class/backlight/*/brightness 2>/dev/null || true
+sudo chgrp berry /sys/class/backlight/*/bl_power /sys/class/backlight/*/brightness 2>/dev/null || true
+sudo chmod 660 /sys/class/backlight/*/bl_power /sys/class/backlight/*/brightness 2>/dev/null || true
 
 # DRM/KMS access for pygame kmsdrm driver (card + render nodes)
 cat << 'UDEV' | sudo tee /etc/udev/rules.d/99-berry-drm.rules > /dev/null
@@ -226,8 +237,8 @@ sudo chmod 660 /dev/dri/card* /dev/dri/render* 2>/dev/null || true
 
 # CPU governor + LED control (for sleep mode energy saving)
 cat << 'UDEV' | sudo tee /etc/udev/rules.d/99-berry-power.rules > /dev/null
-SUBSYSTEM=="cpu", KERNEL=="cpu0", RUN+="/bin/chmod 666 /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
-SUBSYSTEM=="leds", KERNEL=="ACT", RUN+="/bin/chmod 666 /sys/class/leds/ACT/trigger /sys/class/leds/ACT/brightness"
+SUBSYSTEM=="cpu", KERNEL=="cpu0", RUN+="/bin/chgrp berry /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", RUN+="/bin/chmod 660 /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+SUBSYSTEM=="leds", KERNEL=="ACT", RUN+="/bin/chgrp berry /sys/class/leds/ACT/trigger /sys/class/leds/ACT/brightness", RUN+="/bin/chmod 660 /sys/class/leds/ACT/trigger /sys/class/leds/ACT/brightness"
 UDEV
 sudo udevadm control --reload-rules 2>/dev/null || true
 sudo udevadm trigger 2>/dev/null || true
@@ -238,16 +249,20 @@ sudo systemctl stop getty@tty1.service 2>/dev/null || true
 
 # Allow Berry app to run wifi-connect, nmcli, and librespot service management
 # without a password prompt (needed for the setup menu)
-echo "berry ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native" \
-  | sudo tee /etc/sudoers.d/berry-wifi > /dev/null
-sudo chmod 440 /etc/sudoers.d/berry-wifi
+TMP_SUDOERS="/tmp/berry-wifi.$$"
+cat > "$TMP_SUDOERS" << 'EOF'
+berry ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop berry-librespot, /bin/systemctl start berry-librespot, /bin/systemctl restart berry-native
+EOF
+sudo visudo -cf "$TMP_SUDOERS"
+sudo install -m 440 "$TMP_SUDOERS" /etc/sudoers.d/berry-wifi
+rm -f "$TMP_SUDOERS"
 
 # ============================================
 # 10. Setup auto-update cron job
 # ============================================
 echo "🔄 Setting up auto-updates..."
 chmod +x ~/berry/pi/auto-update.sh
-(crontab -l 2>/dev/null | grep -v "berry/pi/auto-update"; echo "0 * * * * ~/berry/pi/auto-update.sh >> ~/berry-update.log 2>&1") | crontab -
+(crontab -l 2>/dev/null | grep -v "berry/pi/auto-update"; echo "0 * * * * bash ~/berry/pi/auto-update.sh >> ~/berry-update.log 2>&1") | crontab -
 
 # ============================================
 # 11. CPU power management (energy saving)

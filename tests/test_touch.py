@@ -115,6 +115,18 @@ class TestLongPress:
         result = handler.check_long_press()
         assert result is False
 
+    def test_long_press_release_does_not_emit_tap(self):
+        """Releasing after long press should not trigger tap action."""
+        handler = TouchHandler(long_press_time=0.1)
+
+        handler.on_down((400, 400))
+        time.sleep(0.15)
+        assert handler.check_long_press() is True
+
+        action, velocity = handler.on_up((400, 400))
+        assert action is None
+        assert velocity == 0
+
 
 class TestDragState:
     """Tests for drag/swipe state tracking."""

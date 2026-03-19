@@ -118,12 +118,14 @@ run_tests() {
     fi
 
     # Run tests
-    if python3 -m pytest "$LOCAL_DIR/tests/" -v --tb=short 2>&1 | tee /tmp/berry_tests.log | tail -20; then
+    if python3 -m pytest "$LOCAL_DIR/tests/" -v --tb=short > /tmp/berry_tests.log 2>&1; then
+        tail -20 /tmp/berry_tests.log
         local passed=$(grep -E "passed|PASSED" /tmp/berry_tests.log | tail -1)
         echo -e "${GREEN}✓ Tests passed${NC} ${DIM}$passed${NC}"
         deactivate 2>/dev/null || true
         return 0
     else
+        tail -20 /tmp/berry_tests.log
         echo -e "${RED}✗ Tests failed${NC}"
         echo -e "${YELLOW}Fix tests before syncing, or use -T to skip${NC}"
         deactivate 2>/dev/null || true

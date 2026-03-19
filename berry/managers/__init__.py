@@ -7,6 +7,7 @@ from .performance import PerformanceMonitor
 from .auto_pause import AutoPauseManager
 from .setup_menu import SetupMenu
 from .settings import Settings
+from .analytics import UsageTracker
 
-__all__ = ['SleepManager', 'SmoothCarousel', 'PlayTimer', 'PerformanceMonitor', 'AutoPauseManager', 'SetupMenu', 'Settings']
+__all__ = ['SleepManager', 'SmoothCarousel', 'PlayTimer', 'PerformanceMonitor', 'AutoPauseManager', 'SetupMenu', 'Settings', 'UsageTracker']
 

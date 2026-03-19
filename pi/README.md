@@ -80,3 +80,49 @@ sudo systemctl restart berry-native
 ```bash
 cat ~/berry-update.log
 ```
+
+### Analytics (stable distinct id)
+If you use PostHog and want one fixed device identity, set this once:
+
+```bash
+cd ~/berry
+cp .env.example .env  # if .env doesn't exist yet
+nano .env
+```
+
+Recommended values in `.env`:
+
+```bash
+ANALYTICS_DISTINCT_ID=berry-livingroom
+ANALYTICS_INCLUDE_CONTENT=0
+ANALYTICS_USE_MACHINE_ID=0
+```
+
+Then restart Berry:
+
+```bash
+sudo systemctl restart berry-native
+```
+
+### Analytics for multiple Raspberry Pi devices
+Use one of these setups:
+
+- **Unique per Pi (recommended for your setup)**  
+  Keep `ANALYTICS_DISTINCT_ID` empty and enable machine id:
+
+  ```bash
+  ANALYTICS_DISTINCT_ID=
+  ANALYTICS_USE_MACHINE_ID=1
+  ```
+
+  Result: each Raspberry Pi shows up as its own device in PostHog.
+
+- **One fixed id (only for shared demo devices)**  
+  Set one explicit id and disable machine id:
+
+  ```bash
+  ANALYTICS_DISTINCT_ID=berry-demo
+  ANALYTICS_USE_MACHINE_ID=0
+  ```
+
+  Result: multiple installs report as one logical device id.

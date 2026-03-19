@@ -74,6 +74,19 @@ class TestTogglePlay:
         pc.toggle_play([item], 0, np)
         assert pc.last_user_play_uri == 'spotify:album:new'
 
+    def test_pause_during_loading_clears_loader_immediately(self):
+        pc, _, _, volume = _make_controller()
+        pc._play_in_progress = True
+        pc.play_state.start_loading()
+        items = [_make_item(uri='spotify:album:x')]
+
+        pc.toggle_play(items, 0, NowPlaying(stopped=True))
+
+        assert pc.play_state.pending_action == 'pause'
+        assert pc.play_state.should_show_loading is False
+        assert pc.pause_intent_active is True
+        volume.mute.assert_called_once()
+
 
 class TestStopAll:
     """Tests for stop_all — invalidate running/pending play requests."""
@@ -112,7 +125,7 @@ class TestStopAll:
             return False
 
         api.play.side_effect = play_then_stop
-        pc._execute_play('spotify:album:x', from_beginning=False)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
 
         assert api.play.call_count == 1
 
@@ -123,10 +136,10 @@ class TestStopAll:
         api.play.return_value = True
 
         pc._play_in_progress = True
-        pc._pending_play = ('spotify:album:queued', False)
+        pc._pending_play = ('spotify:album:queued', False, 0)
         pc.stop_all()
 
-        pc._execute_play('spotify:album:x', from_beginning=False)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
 
         calls = [c.args[0] for c in api.play.call_args_list]
         assert 'spotify:album:queued' not in calls
@@ -179,6 +192,48 @@ class TestProgressSave:
         pc.save_progress(np)
         api.status.assert_not_called()
 
+    def test_save_progress_uses_coherent_now_playing_snapshot(self):
+        pc, _, catalog, _ = _make_controller()
+        np = NowPlaying(
+            playing=True,
+            context_uri='spotify:album:x',
+            track_uri='spotify:track:abc',
+            position=12000,
+            track_name='Track X',
+            track_artist='Artist X',
+        )
+
+        with patch('berry.controllers.playback.run_async') as mock_run:
+            mock_run.side_effect = lambda fn, *a: fn(*a)
+            pc.last_progress_save = 0
+            pc.save_progress(np, force=True)
+
+        catalog.save_progress.assert_called_once_with(
+            'spotify:album:x',
+            'spotify:track:abc',
+            12000,
+            'Track X',
+            'Artist X',
+        )
+
+    def test_save_progress_rejects_snapshot_without_track_uri(self):
+        pc, _, catalog, _ = _make_controller()
+        np = NowPlaying(
+            playing=True,
+            context_uri='spotify:album:x',
+            track_uri=None,
+            position=12000,
+            track_name='Track X',
+            track_artist='Artist X',
+        )
+
+        with patch('berry.controllers.playback.run_async') as mock_run:
+            mock_run.side_effect = lambda fn, *a: fn(*a)
+            pc.last_progress_save = 0
+            pc.save_progress(np, force=True)
+
+        catalog.save_progress.assert_not_called()
+
 
 class TestIsItemPlaying:
     """Tests for is_item_playing check."""
@@ -230,21 +285,29 @@ class TestLoadingState:
         pc.update_loading_state(np, carousel_settled=True, play_timer_active=False)
         assert pc.play_state.loading_since is None
 
+    def test_loading_does_not_restart_while_pause_override_active(self):
+        pc, _, _, _ = _make_controller()
+        pc.play_state.set_pending('pause')
+        pc._set_pause_override('test_pause')
+        np = NowPlaying(playing=True)
+        pc.update_loading_state(np, carousel_settled=True, play_timer_active=True)
+        assert pc.play_state.should_show_loading is False
+
 
 class TestPlayFailure:
     """Tests for play failure recovery (e.g. no active Spotify session)."""
 
     @patch('berry.controllers.playback.time.sleep')
     def test_no_session_retries_then_shows_toast(self, mock_sleep):
-        """None (no session) is retried — librespot may be re-authenticating."""
+        """No session returns immediately and shows reconnect toast."""
         pc, api, _, _ = _make_controller()
         api.play.return_value = None
         toast = MagicMock()
         pc._on_toast = toast
 
-        pc._execute_play('spotify:album:x', from_beginning=False)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
 
-        assert api.play.call_count == 5
+        assert api.play.call_count == 1
         assert pc.play_state.pending_action is None
         assert pc.play_state.loading_since is None
         toast.assert_called_once_with('Verbind via Spotify')
@@ -257,19 +320,19 @@ class TestPlayFailure:
         toast = MagicMock()
         pc._on_toast = toast
 
-        pc._execute_play('spotify:album:x', from_beginning=False)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
 
-        assert api.play.call_count == 5
+        assert api.play.call_count == 2
         assert pc.play_state.pending_action is None
         assert pc.play_state.loading_since is None
-        toast.assert_called_once_with('Verbind via Spotify')
+        toast.assert_called_once_with('Laden mislukt, probeer opnieuw')
 
     def test_play_success_keeps_pending_state(self):
         pc, api, _, _ = _make_controller()
         api.play.return_value = True
 
         pc.play_state.set_pending('play')
-        pc._execute_play('spotify:album:x', from_beginning=False)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
 
         assert pc.play_state.pending_action == 'play'
 
@@ -279,15 +342,15 @@ class TestLibrespotCrashRecovery:
 
     @patch('berry.controllers.playback.time.sleep')
     def test_play_recovers_after_restart(self, mock_sleep):
-        """Librespot returns None (no session) while re-authenticating, then succeeds."""
+        """One transient failure can recover on retry."""
         pc, api, _, _ = _make_controller()
-        api.play.side_effect = [None, None, None, True]
+        api.play.side_effect = [False, True]
         toast = MagicMock()
         pc._on_toast = toast
 
-        pc._execute_play('spotify:album:x', from_beginning=False)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
 
-        assert api.play.call_count == 4
+        assert api.play.call_count == 2
         toast.assert_not_called()
 
     @patch('berry.controllers.playback.time.sleep')
@@ -298,22 +361,22 @@ class TestLibrespotCrashRecovery:
         toast = MagicMock()
         pc._on_toast = toast
 
-        pc._execute_play('spotify:album:x', from_beginning=False)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
 
-        assert api.play.call_count == 5
-        toast.assert_called_once_with('Verbind via Spotify')
+        assert api.play.call_count == 2
+        toast.assert_called_once_with('Laden mislukt, probeer opnieuw')
 
     @patch('berry.controllers.playback.time.sleep')
     def test_play_recovers_from_mixed_failures(self, mock_sleep):
-        """Librespot is down (False), restarts with no session (None), then succeeds."""
+        """Librespot can recover after one transient false response."""
         pc, api, _, _ = _make_controller()
-        api.play.side_effect = [False, None, False, True]
+        api.play.side_effect = [False, True]
         toast = MagicMock()
         pc._on_toast = toast
 
-        pc._execute_play('spotify:album:x', from_beginning=False)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
 
-        assert api.play.call_count == 4
+        assert api.play.call_count == 2
         toast.assert_not_called()
 
     @patch('berry.controllers.playback.time.sleep')
@@ -327,7 +390,7 @@ class TestLibrespotCrashRecovery:
             return False
 
         api.play.side_effect = track_loading
-        pc._execute_play('spotify:album:x', from_beginning=False)
+        pc._execute_play('spotify:album:x', from_beginning=False, epoch=0)
 
         # After first failure, start_loading() is called before sleep,
         # so subsequent attempts should see loading_since set
@@ -376,7 +439,7 @@ class TestPlayQueueing:
 
         pc.play_item('spotify:album:second')
 
-        assert pc._pending_play == ('spotify:album:second', False)
+        assert pc._pending_play == ('spotify:album:second', False, 0)
         # Original play is still in progress, no new thread started
         assert pc._play_in_progress is True
 
@@ -386,13 +449,81 @@ class TestPlayQueueing:
         pc, api, _, _ = _make_controller()
         api.play.return_value = True
 
-        pc._pending_play = ('spotify:album:queued', False)
+        pc._pending_play = ('spotify:album:queued', False, 0)
         pc._play_in_progress = True
 
         with patch('berry.controllers.playback.run_async') as mock_run:
             mock_run.side_effect = lambda fn, *a: fn(*a)
-            pc._execute_play('spotify:album:first', from_beginning=False)
+            pc._execute_play('spotify:album:first', from_beginning=False, epoch=0)
 
         calls = [c.args[0] for c in api.play.call_args_list]
         assert 'spotify:album:first' in calls
         assert 'spotify:album:queued' in calls
+
+
+class TestQueuedPlayStaleness:
+    """Queued play handoff should drop stale work."""
+
+    @patch('berry.controllers.playback.time.sleep')
+    def test_pending_request_dropped_after_generation_change(self, mock_sleep):
+        pc, api, _, _ = _make_controller()
+        api.play.return_value = True
+        pc._pending_play = ('spotify:album:queued', False, 0)
+        pc._play_in_progress = True
+
+        def invalidate_generation(*_):
+            pc.stop_all()
+
+        mock_sleep.side_effect = invalidate_generation
+        pc._execute_play('spotify:album:first', from_beginning=False, epoch=0)
+
+        calls = [c.args[0] for c in api.play.call_args_list]
+        assert calls == ['spotify:album:first']
+
+    @patch('berry.controllers.playback.time.sleep')
+    def test_play_success_ignored_when_pause_intent_active(self, mock_sleep):
+        pc, api, _, volume = _make_controller()
+        on_committed = MagicMock()
+        pc._on_play_committed = on_committed
+        api.play.return_value = True
+        pc.play_state.set_pending('pause')
+        pc._set_pause_override('test_pause')
+
+        pc._execute_play('spotify:album:first', from_beginning=False, epoch=0)
+
+        volume.unmute.assert_not_called()
+        on_committed.assert_not_called()
+
+
+class TestRetryBackoffGuards:
+    """Tests for reconnect retry staleness and transport cooldown."""
+
+    def test_retry_failed_dropped_when_too_old(self):
+        pc, _, _, _ = _make_controller()
+        pc._failed_play = ('spotify:album:x', False, 0)
+        pc._failed_play_since = time.time() - 25
+        pc.retry_failed()
+        assert pc._failed_play is None
+
+    @patch('berry.controllers.playback.run_async')
+    def test_pause_command_suppressed_by_cooldown(self, mock_run_async):
+        pc, _, _, _ = _make_controller()
+        items = [_make_item(uri='spotify:album:x')]
+        now = NowPlaying(playing=True, context_uri='spotify:album:x')
+        pc.toggle_play(items, 0, now)
+        pc.toggle_play(items, 0, now)
+        # First pause should schedule async call, second is suppressed by cooldown
+        assert mock_run_async.call_count == 1
+
+    @patch('berry.controllers.playback.time.sleep')
+    def test_pending_request_dropped_when_not_current(self, mock_sleep):
+        pc, api, _, _ = _make_controller()
+        api.play.return_value = True
+        pc._is_request_current = lambda epoch, uri: uri == 'spotify:album:first'
+        pc._pending_play = ('spotify:album:queued', False, 0)
+        pc._play_in_progress = True
+
+        pc._execute_play('spotify:album:first', from_beginning=False, epoch=0)
+
+        calls = [c.args[0] for c in api.play.call_args_list]
+        assert calls == ['spotify:album:first']

@@ -45,28 +45,71 @@ button:disabled{opacity:.25;cursor:default}
 (function(){
   var nets = [];
   var app = document.getElementById('app');
+  var MAX_SSID_LENGTH = 64;
+
+  function safeText(value){
+    if(typeof value !== 'string') return '';
+    return value.slice(0, MAX_SSID_LENGTH);
+  }
+
+  function setStatus(type, text){
+    var box = document.createElement('div');
+    box.className = 'status show ' + type;
+    box.textContent = text;
+    app.replaceChildren(box);
+  }
 
   fetch('/networks').then(function(r){ return r.json() }).then(function(data){
-    nets = data;
-    if(!nets.length){ app.innerHTML = '<div class="status show err">Geen netwerken gevonden</div>'; return }
+    nets = Array.isArray(data) ? data : [];
+    if(!nets.length){ setStatus('err', 'Geen netwerken gevonden'); return }
     render();
   }).catch(function(){
-    app.innerHTML = '<div class="status show err">Kan netwerken niet laden</div>';
+    setStatus('err', 'Kan netwerken niet laden');
   });
 
   function render(){
-    var h = '<label>Netwerk</label><div class="select-wrap"><select id="ssid">';
-    for(var i=0;i<nets.length;i++){
-      h += '<option value="'+esc(nets[i].ssid)+'">'+esc(nets[i].ssid)+'</option>';
-    }
-    h += '</select></div>';
-    h += '<div class="field" id="pw-field"><label>Wachtwoord</label><input id="pw" type="password" placeholder="Voer wachtwoord in" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></div>';
-    h += '<button id="go">Verbinden</button>';
-    h += '<div class="status" id="st"></div>';
-    app.innerHTML = h;
+    var label = document.createElement('label');
+    label.textContent = 'Netwerk';
 
-    var sel = document.getElementById('ssid');
-    var pwField = document.getElementById('pw-field');
+    var wrap = document.createElement('div');
+    wrap.className = 'select-wrap';
+    var sel = document.createElement('select');
+    sel.id = 'ssid';
+    for(var i=0;i<nets.length;i++){
+      var opt = document.createElement('option');
+      var ssid = safeText((nets[i] && nets[i].ssid) || '');
+      opt.value = ssid;
+      opt.textContent = ssid;
+      sel.appendChild(opt);
+    }
+    wrap.appendChild(sel);
+
+    var pwField = document.createElement('div');
+    pwField.className = 'field';
+    pwField.id = 'pw-field';
+    var pwLabel = document.createElement('label');
+    pwLabel.textContent = 'Wachtwoord';
+    var pwInput = document.createElement('input');
+    pwInput.id = 'pw';
+    pwInput.type = 'password';
+    pwInput.placeholder = 'Voer wachtwoord in';
+    pwInput.autocomplete = 'off';
+    pwInput.autocorrect = 'off';
+    pwInput.autocapitalize = 'off';
+    pwInput.spellcheck = false;
+    pwField.appendChild(pwLabel);
+    pwField.appendChild(pwInput);
+
+    var btn = document.createElement('button');
+    btn.id = 'go';
+    btn.textContent = 'Verbinden';
+
+    var st = document.createElement('div');
+    st.className = 'status';
+    st.id = 'st';
+
+    app.replaceChildren(label, wrap, pwField, btn, st);
+
     function updatePw(){
       var n = nets.find(function(x){ return x.ssid === sel.value });
       pwField.className = (n && n.security !== 'none') ? 'field show' : 'field';
@@ -74,7 +117,7 @@ button:disabled{opacity:.25;cursor:default}
     sel.addEventListener('change', updatePw);
     updatePw();
 
-    document.getElementById('go').addEventListener('click', doConnect);
+    btn.addEventListener('click', doConnect);
   }
 
   function doConnect(){
@@ -106,11 +149,6 @@ button:disabled{opacity:.25;cursor:default}
     });
   }
 
-  function esc(s){
-    var d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
-  }
 })();
 </script>
 </body>

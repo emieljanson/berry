@@ -129,17 +129,17 @@ class TestPlayTimer:
         item = _make_item()
         t.start(item)
         original_start = t.start_time
-        time.sleep(0.01)
+        t.start_time = original_start - 0.01
         t.start(item)  # Same URI
-        assert t.start_time == original_start
+        assert t.start_time == original_start - 0.01
 
     def test_different_item_restarts(self):
         t = PlayTimer()
         t.start(_make_item(uri='spotify:album:a'))
         original_start = t.start_time
-        time.sleep(0.01)
+        t.start_time = original_start - 0.01
         t.start(_make_item(uri='spotify:album:b'))
-        assert t.start_time > original_start
+        assert t.start_time > (original_start - 0.01)
 
     def test_fire_sets_last_played_uri(self):
         t = PlayTimer()

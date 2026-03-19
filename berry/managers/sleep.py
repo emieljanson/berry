@@ -125,7 +125,8 @@ class SleepManager:
         self._set_display(False)
         self._set_low_power_cpu(True)
         self._set_led(False)
-        logger.info('Sleep mode active (display off, CPU low, LED off)')
+        self._set_wifi_power_save(True)
+        logger.info('Sleep mode active (display off, CPU low, LED off, WiFi ps)')
     
     def wake_up(self):
         """Wake from sleep mode - restore full power."""
@@ -135,6 +136,7 @@ class SleepManager:
         logger.info('Waking up...')
         self.is_sleeping = False
         self.last_activity = time.time()
+        self._set_wifi_power_save(False)
         self._set_led(True)
         self._set_low_power_cpu(False)
         self._set_display(True)
@@ -185,6 +187,17 @@ class SleepManager:
                 self._write_sysfs(self.LED_BRIGHTNESS_PATH, '0')
         except Exception as e:
             logger.debug(f'Could not control LED: {e}')
+    
+    def _set_wifi_power_save(self, on: bool):
+        """Enable/disable WiFi power save. Lets the chip sleep between beacons."""
+        state = 'on' if on else 'off'
+        try:
+            subprocess.run(
+                ['sudo', 'iw', 'wlan0', 'set', 'power_save', state],
+                capture_output=True, timeout=5,
+            )
+        except Exception as e:
+            logger.debug(f'Could not set WiFi power save: {e}')
     
     def _write_sysfs(self, path: str, value: str):
         """Write to a sysfs file, trying direct first then sudo."""

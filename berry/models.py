@@ -41,12 +41,15 @@ class LibrespotStatus:
         artist_names = track.get('artist_names', [])
         artist = ', '.join(artist_names) if artist_names else None
         
+        raw_context_uri = data.get('context_uri') if isinstance(data, dict) else None
+        resolved_context_uri = raw_context_uri or context_uri
+
         return cls(
             playing=not data.get('stopped', True) and not data.get('paused', False),
             paused=data.get('paused', False),
             stopped=data.get('stopped', True),
             volume=data.get('volume'),
-            context_uri=context_uri,
+            context_uri=resolved_context_uri,
             track_name=track.get('name'),
             track_artist=artist,
             track_album=track.get('album_name'),
@@ -82,6 +85,7 @@ class NowPlaying:
     track_artist: Optional[str] = None
     track_album: Optional[str] = None
     track_cover: Optional[str] = None
+    track_uri: Optional[str] = None
     position: int = 0
     duration: int = 0
     
@@ -146,11 +150,18 @@ class PlayState:
     @property
     def should_show_loading(self) -> bool:
         """True if in any loading state (for play button icon)."""
+        if self.pending_action == 'pause':
+            return False
         return self.loading_since is not None
+
+    @property
+    def pause_intent_active(self) -> bool:
+        """True when a user pause intent should dominate UI state."""
+        return self.pending_action == 'pause'
     
     def display_playing(self, actual_playing: bool) -> bool:
         """What the UI should show for play/pause state."""
-        if self.pending_action == 'pause':
+        if self.pause_intent_active:
             return False
         if self.pending_action == 'play' or self.should_show_loading:
             return True

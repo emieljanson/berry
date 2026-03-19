@@ -87,6 +87,12 @@ class TouchHandler:
         dx = pos[0] - self.start_x
         dy = pos[1] - self.start_y
         dt = (time.time() - self.start_time) * 1000  # ms
+
+        # If long-press already fired, suppress tap/swipe action on release.
+        if self.long_press_fired:
+            self.drag_offset = 0
+            logger.debug('Touch up: long press release, suppress tap action')
+            return (None, 0)
         
         # Portrait mode: ignore if mostly perpendicular to carousel direction
         # Carousel is along Y, so ignore swipes that are mostly along X

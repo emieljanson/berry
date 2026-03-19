@@ -67,17 +67,24 @@ class Renderer:
         self._needs_full_redraw = True
     
     @staticmethod
-    def _get_track_key(item: Optional[CatalogItem], now_playing: NowPlaying) -> Optional[Tuple[str, str]]:
-        """Return (name, artist) tuple for the track to display, or None."""
+    def _get_track_key(item: Optional[CatalogItem], now_playing: NowPlaying,
+                       is_loading: bool, pending_focus_uri: Optional[str],
+                       requested_focus_uri: Optional[str], play_in_progress: bool) -> Optional[Tuple[str, str]]:
+        """Return (name, artist) tuple for the title area, or None."""
         if not item:
             return None
-        if now_playing.context_uri == item.uri and now_playing.track_name:
+        # Keep title tied to the focused context, and preserve it while paused
+        # so resume shows the same track user paused on.
+        if ((now_playing.playing or now_playing.paused) and
+                now_playing.context_uri == item.uri and
+                now_playing.track_name):
             return (now_playing.track_name, now_playing.track_artist or '')
-        if item.current_track and isinstance(item.current_track, dict):
-            name = item.current_track.get('name', item.name) or item.name
-            artist = item.current_track.get('artist', item.artist or '') or item.artist or ''
-            return (name, artist)
-        return (item.name or 'Unknown', item.artist or '')
+        # Fallback: show last saved track metadata for this context while
+        # live now_playing has not caught up yet.
+        current_track = item.current_track if isinstance(item.current_track, dict) else None
+        if current_track and current_track.get('name'):
+            return (current_track.get('name'), current_track.get('artist') or '')
+        return None
     
     def draw(self, ctx: RenderContext) -> Optional[List[pygame.Rect]]:
         """
@@ -106,7 +113,14 @@ class Renderer:
         self.delete_button_rect = None
         
         current_item = ctx.items[ctx.selected_index] if ctx.selected_index < len(ctx.items) else None
-        current_track_key = self._get_track_key(current_item, ctx.now_playing)
+        current_track_key = self._get_track_key(
+            current_item,
+            ctx.now_playing,
+            ctx.is_loading,
+            ctx.pending_focus_uri,
+            ctx.requested_focus_uri,
+            ctx.play_in_progress,
+        )
         
         # Check if we need a full redraw
         state_changed = (
@@ -144,7 +158,7 @@ class Renderer:
         if self._needs_full_redraw:
             # Full redraw
             self._draw_background()
-            self._draw_track_info(current_item, ctx.now_playing)
+            self._draw_track_info(current_item, ctx)
             self._draw_controls(ctx.is_playing, ctx.volume_index, ctx.pressed_button)
             
             if self._static_layer is None:
@@ -217,12 +231,19 @@ class Renderer:
         line2_rect = line2.get_rect(center=(center_x - 20, center_y))
         self.screen.blit(line2, line2_rect)
     
-    def _draw_track_info(self, item: Optional[CatalogItem], now_playing: NowPlaying):
+    def _draw_track_info(self, item: Optional[CatalogItem], ctx: RenderContext):
         """Draw track name and artist (portrait mode - at user's top)."""
         if not item:
             return
         
-        track_key = self._get_track_key(item, now_playing)
+        track_key = self._get_track_key(
+            item,
+            ctx.now_playing,
+            ctx.is_loading,
+            ctx.pending_focus_uri,
+            ctx.requested_focus_uri,
+            ctx.play_in_progress,
+        )
         if not track_key:
             return
         name, artist = track_key
@@ -236,9 +257,17 @@ class Renderer:
             # First render unrotated to check width
             name_surface = self.font_large.render(display_name, True, COLORS['text_primary'])
             if name_surface.get_width() > max_width:
-                while name_surface.get_width() > max_width - 30 and len(display_name) > 3:
+                # Re-render every truncation step; otherwise width never changes
+                # and we collapse almost every long title to 3 chars + ellipsis.
+                while len(display_name) > 3:
+                    trial_text = display_name + '...'
+                    trial_surface = self.font_large.render(trial_text, True, COLORS['text_primary'])
+                    if trial_surface.get_width() <= max_width - 30:
+                        name_surface = trial_surface
+                        break
                     display_name = display_name[:-1]
-                name_surface = self.font_large.render(display_name + '...', True, COLORS['text_primary'])
+                else:
+                    name_surface = self.font_large.render(display_name + '...', True, COLORS['text_primary'])
             
             # Now rotate for portrait display
             name_surface = pygame.transform.rotate(name_surface, -90)
@@ -294,7 +323,10 @@ class Renderer:
             # All items (albums and playlists) use single image field
             # Composites for playlists are pre-rendered and stored as single image
             if is_center:
-                cover = self.image_cache.get(item.image, size)
+                if loading:
+                    cover = self.image_cache.get_dimmed(item.image, size)
+                else:
+                    cover = self.image_cache.get(item.image, size)
                 center_cover_rect = (draw_x, draw_y, size, size)
                 center_item = item
             else:
@@ -410,6 +442,7 @@ class Renderer:
         """Draw a tinted icon button on the cover. Returns (x, y, w, h) hit rect."""
         cover_x, cover_y, cover_w, cover_h = cover_rect
         btn_size, icon_size, margin = 100, 72, 16
+        touch_padding = 30
         circle_radius = int(icon_size * (42 / 56) / 2)
         btn_x = cover_x + margin
         btn_y = cover_y + cover_h - btn_size - margin
@@ -424,7 +457,10 @@ class Renderer:
             tinted.fill(tint, special_flags=pygame.BLEND_RGB_MULT)
             self.screen.blit(tinted, tinted.get_rect(center=center))
         
-        return (btn_x, btn_y, btn_size, btn_size)
+        hit_x = btn_x - touch_padding
+        hit_y = btn_y - touch_padding
+        hit_size = btn_size + touch_padding * 2
+        return (hit_x, hit_y, hit_size, hit_size)
     
     def _draw_add_button(self, cover_rect: tuple):
         """Draw + button on cover for temp items."""
@@ -487,13 +523,12 @@ class Renderer:
         return self._spinner_overlay_cache[size]
     
     def _draw_loading_spinner(self, cover_rect: tuple):
-        """Draw loading spinner overlay on cover art using pre-rendered frames."""
+        """Draw loading spinner on cover art using pre-rendered frames.
+        
+        No overlay needed — the center cover is already drawn dimmed when loading.
+        """
         cover_x, cover_y, cover_w, cover_h = cover_rect
         size = max(cover_w, cover_h)
-        
-        # Get or create cached overlay
-        overlay = self._get_spinner_overlay(size)
-        self.screen.blit(overlay, (cover_x, cover_y))
         
         # Get or create cached spinner frames
         if size not in self._spinner_cache:

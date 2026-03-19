@@ -22,6 +22,9 @@ class RenderContext:
     pressed_button: Optional[str]
     is_loading: bool
     is_playing: bool  # What to show for play/pause button
+    pending_focus_uri: Optional[str] = None
+    requested_focus_uri: Optional[str] = None
+    play_in_progress: bool = False
     toast_message: Optional[str] = None
     menu_state: MenuState = MenuState.CLOSED
     menu_known_networks: List[str] = field(default_factory=list)
