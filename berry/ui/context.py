@@ -31,4 +31,5 @@ class RenderContext:
     menu_current_network: Optional[str] = None
     auto_pause_minutes: int = 30
     progress_expiry_hours: int = 48
+    app_version_label: str = ''
 

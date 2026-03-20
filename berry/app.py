@@ -30,7 +30,7 @@ from .handlers import TouchHandler, EventListener, EvdevTouchHandler
 from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker
 from .controllers import VolumeController, PlaybackController
 from .ui import ImageCache, Renderer, RenderContext
-from .utils import run_async
+from .utils import run_async, get_runtime_version_label
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,9 @@ class Berry:
     
     def _init_components(self):
         """Initialize all application components."""
+        self.app_version_label = get_runtime_version_label()
+        logger.info(f'App version: {self.app_version_label}')
+
         # Mock mode
         self.mock_mode = MOCK_MODE
         
@@ -1977,6 +1980,7 @@ class Berry:
             menu_current_network=self.setup_menu.current_network,
             auto_pause_minutes=self.settings.auto_pause_minutes,
             progress_expiry_hours=self.settings.progress_expiry_hours,
+            app_version_label=self.app_version_label,
         )
         return self.renderer.draw(ctx)
 

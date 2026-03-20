@@ -28,6 +28,33 @@ def run_async(fn, *args):
     _executor.submit(wrapper)
 
 
+def get_runtime_version_label() -> str:
+    """Return a short runtime version label from git metadata.
+
+    Format: "<branch>@<short-hash>" (example: "main@1818997").
+    Falls back to "unknown" when git metadata is unavailable.
+    """
+    try:
+        branch_result = subprocess.run(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            capture_output=True, text=True, check=True, timeout=2,
+        )
+        branch = branch_result.stdout.strip() or 'unknown'
+    except Exception:
+        branch = 'unknown'
+
+    try:
+        hash_result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, check=True, timeout=2,
+        )
+        short_hash = hash_result.stdout.strip() or 'unknown'
+    except Exception:
+        short_hash = 'unknown'
+
+    return f'{branch}@{short_hash}'
+
+
 _wm8960_card: str | None = None
 
 

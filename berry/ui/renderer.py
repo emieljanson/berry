@@ -612,12 +612,17 @@ class Renderer:
                 ('auto_pause', f'Auto-pauze: {ctx.auto_pause_minutes} min', COLORS['bg_elevated']),
                 ('progress_expiry', f'Onthouden: {ctx.progress_expiry_hours} uur', COLORS['bg_elevated']),
             ]
-            self._draw_menu_screen('Instellingen', buttons)
+            self._draw_menu_screen(
+                'Instellingen',
+                buttons,
+                footer_line=f'Versie: {ctx.app_version_label}' if ctx.app_version_label else None,
+            )
         
         self._needs_full_redraw = True
     
     def _draw_menu_screen(self, title: str, buttons: list,
-                          close_label: str = 'Sluiten', lines: Optional[List[str]] = None):
+                          close_label: str = 'Sluiten', lines: Optional[List[str]] = None,
+                          footer_line: Optional[str] = None):
         """Draw a menu screen with consistent layout.
         
         buttons: list of (id, label, color) tuples. None entries add extra spacing.
@@ -654,6 +659,10 @@ class Renderer:
         close_btn = pygame.Rect(max(20, x), Y, H, W)
         self._draw_menu_button(close_btn, close_label, COLORS['bg_elevated'])
         self.menu_button_rects['close'] = close_btn
+
+        if footer_line:
+            footer = self._render_text_rotated(footer_line, self.font_small, COLORS['text_muted'])
+            self.screen.blit(footer, footer.get_rect(center=(35, CAROUSEL_CENTER_Y)))
     
     def _draw_menu_button(self, rect: pygame.Rect, label: str, bg_color: tuple,
                           text_color: Optional[tuple] = None):

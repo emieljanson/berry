@@ -156,6 +156,11 @@ class PlaybackController:
             logger.info(f'Dropping stale failed retry by age: {failed_age:.1f}s')
             self._failed_play = None
             self._failed_play_since = 0.0
+            self._emit_toast('Laden mislukt, probeer opnieuw')
+            logger.warning(
+                'TOAST shown | message="Laden mislukt, probeer opnieuw" '
+                f'| reason=retry_window_expired | age={failed_age:.1f}s'
+            )
             return
         uri, from_beginning, epoch = failed
         if not self._is_request_current(epoch, uri):
@@ -254,7 +259,7 @@ class PlaybackController:
             self.play_state.stop_loading()
             return
 
-        has_active_play_work = play_timer_active or self._play_in_progress
+        has_active_play_work = play_timer_active or self._play_in_progress or self._failed_play is not None
         if self.play_state.pending_action == 'pause' and not has_active_play_work:
             self.play_state.stop_loading()
             return
@@ -373,17 +378,19 @@ class PlaybackController:
                     f'uri={uri[:50]} | epoch={epoch} | from_beginning={from_beginning} | '
                     f'status_ctx={(status_ctx or "none")[:40]} | status_playing={status_playing}'
                 )
-                self.play_state.clear()
                 if result is None:
+                    # No active Spotify session: definitive failure, clear loader immediately.
+                    self.play_state.clear()
                     self._emit_toast('Verbind via Spotify')
                     logger.warning(
                         'TOAST shown | message="Verbind via Spotify" '
                         f'| failed_uri={uri[:50]} | epoch={epoch}'
                     )
                 else:
-                    self._emit_toast('Laden mislukt, probeer opnieuw')
+                    # Timeout/network error: keep loader on while retry window is open.
+                    # Toast and loader-stop happen in retry_failed() if retry also fails.
                     logger.warning(
-                        'TOAST shown | message="Laden mislukt, probeer opnieuw" '
+                        'Keeping loader alive for retry window '
                         f'| failed_uri={uri[:50]} | epoch={epoch}'
                     )
                 self._on_play_failed(uri, epoch)
