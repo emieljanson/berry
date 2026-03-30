@@ -239,3 +239,33 @@ class TestContextSwitchWatchdog:
         app._check_context_switch_watchdog(focused)
 
         assert app._context_switch_stall_since == 0.0
+
+
+class TestPausedSameFocusContext:
+    """Paused on the focused album must not trigger focus-dwell auto-play (auto-pause / manual pause)."""
+
+    def test_true_when_paused_and_uri_matches(self):
+        uri = 'spotify:album:a'
+        items = [_item('1', uri, 'A')]
+        app = _make_berry(
+            items,
+            NowPlaying(playing=False, paused=True, stopped=False, context_uri=uri),
+        )
+        assert app._is_paused_same_focus_context(items[0]) is True
+
+    def test_false_when_playing(self):
+        uri = 'spotify:album:a'
+        items = [_item('1', uri, 'A')]
+        app = _make_berry(
+            items,
+            NowPlaying(playing=True, paused=False, context_uri=uri),
+        )
+        assert app._is_paused_same_focus_context(items[0]) is False
+
+    def test_false_when_different_context(self):
+        items = [_item('1', 'spotify:album:a', 'A')]
+        app = _make_berry(
+            items,
+            NowPlaying(playing=False, paused=True, stopped=False, context_uri='spotify:album:b'),
+        )
+        assert app._is_paused_same_focus_context(items[0]) is False

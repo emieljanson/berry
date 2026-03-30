@@ -1306,7 +1306,14 @@ class Berry:
     def _is_item_playing(self, item: CatalogItem) -> bool:
         """Check if an item is currently playing."""
         return self.playback.is_item_playing(item, self.now_playing)
-    
+
+    def _is_paused_same_focus_context(self, item: CatalogItem) -> bool:
+        """Spotify is paused on the same context as carousel focus (do not auto-resume from dwell)."""
+        return (
+            item.uri == self.now_playing.context_uri
+            and self.now_playing.paused
+        )
+
     def _skip_track(self, api_fn):
         """Save progress, mark as user action, then skip prev/next."""
         self.playback.last_user_play_time = time.time()
@@ -1683,6 +1690,16 @@ class Berry:
                 self._requested_focus_uri = None
                 self._requested_focus_since = 0.0
                 self.volume.unmute()
+            elif self._is_paused_same_focus_context(focused_item):
+                logger.info(
+                    'PLAY skip | paused on focused context, no auto resume '
+                    f'(ctx={(self.now_playing.context_uri or "none")[:40]})'
+                )
+                self._reset_pending_focus('paused_same_focus_context')
+                self._requested_focus_epoch = None
+                self._requested_focus_uri = None
+                self._requested_focus_since = 0.0
+                self.volume.unmute()
             elif not self.playback.play_in_progress:
                 now = time.time()
                 focused_uri = focused_item.uri
@@ -1756,6 +1773,7 @@ class Berry:
                 focused_item is not None
                 and not focused_item.is_temp
                 and not self._is_item_playing(focused_item)
+                and not self._is_paused_same_focus_context(focused_item)
                 and self._requested_focus_epoch == self._focus_epoch
                 and self._requested_focus_uri == focused_item.uri
             )
@@ -1861,7 +1879,12 @@ class Berry:
                 or self._pending_focus_uri == focused_uri
                 or requested_current_focus
             )
-            if auto_intent_ready and not focus_is_playing and not has_active_play_path:
+            if (
+                auto_intent_ready
+                and not focus_is_playing
+                and not has_active_play_path
+                and not self._is_paused_same_focus_context(focused_item)
+            ):
                 now = time.time()
                 if self._autoplay_stall_since <= 0.0:
                     self._autoplay_stall_since = now
