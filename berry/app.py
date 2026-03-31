@@ -27,7 +27,7 @@ from .config import (
 from .models import CatalogItem, NowPlaying, LibrespotStatus
 from .api import LibrespotAPI, NullLibrespotAPI, CatalogManager
 from .handlers import TouchHandler, EventListener, EvdevTouchHandler
-from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker
+from .managers import SleepManager, SmoothCarousel, PlayTimer, PerformanceMonitor, AutoPauseManager, SetupMenu, Settings, UsageTracker, BluetoothManager
 from .controllers import VolumeController, PlaybackController
 from .ui import ImageCache, Renderer, RenderContext
 from .utils import run_async, get_runtime_version_label
@@ -290,6 +290,15 @@ class Berry:
         self._last_fps_log = time.time()
         self._fps_log_interval = 30  # Log FPS every 30 seconds
         
+        # Bluetooth manager
+        self.bluetooth = BluetoothManager(
+            settings=self.settings,
+            on_toast=self._show_toast,
+            on_invalidate=lambda: self.renderer.invalidate(),
+            on_audio_changed=self._on_bt_audio_changed,
+        )
+        self._bt_audio_active: bool = False
+
         # Setup menu
         self.setup_menu = SetupMenu(
             catalog_manager=self.catalog_manager,
@@ -297,6 +306,7 @@ class Berry:
             on_toast=self._show_toast,
             on_invalidate=lambda: self.renderer.invalidate(),
             on_library_cleared=self._on_library_cleared,
+            bluetooth_manager=self.bluetooth,
         )
         # Volume button hold tracking (3s hold opens setup menu)
         self._volume_hold_start: Optional[float] = None
@@ -318,6 +328,7 @@ class Berry:
             'volume_high': 'speaker-high-fill.png',
             'plus': 'plus-circle-fill.png',
             'minus': 'minus-circle-fill.png',
+            'headphone': 'headphone.png',
         }
         for name, filename in icon_files.items():
             try:
@@ -649,6 +660,14 @@ class Berry:
         """Update carousel max index when items change."""
         self.carousel.max_index = max(0, len(self.display_items) - 1)
     
+    def _on_bt_audio_changed(self, active: bool):
+        """Called by BluetoothManager when audio routing changes."""
+        self._bt_audio_active = active
+        if active:
+            # Set initial volume on BT sink to match current headphone level
+            self.bluetooth.set_volume(self.volume.headphone_level)
+        self.renderer.invalidate()
+
     def _handle_signal(self, signum, frame):
         """Handle SIGTERM/SIGINT for graceful shutdown."""
         sig_name = 'SIGTERM' if signum == signal.SIGTERM else 'SIGINT'
@@ -673,9 +692,12 @@ class Berry:
             # Start status polling
             run_async(self._poll_status)
             logger.info(f'Polling {LIBRESPOT_URL}')
-            
+
             # Force initial connection check (don't wait for first poll interval)
             run_async(self._initial_connect)
+
+            # Start Bluetooth monitoring
+            self.bluetooth.start_monitoring()
         else:
             logger.info('Running in MOCK MODE')
             self._startup_ready = True
@@ -727,6 +749,7 @@ class Berry:
         logger.info('Shutting down...')
         self._save_progress_on_shutdown()
         self.tracker.on_shutdown()
+        self.bluetooth.stop()
         
         # Restore display before exit so next boot doesn't start with black screen
         if self.sleep_manager.is_sleeping:
@@ -1217,16 +1240,23 @@ class Berry:
         x, y = pos
         center_y = CAROUSEL_CENTER_Y
         btn_spacing = BTN_SPACING  # 155
-        
+
         # Volume button Y position (matches renderer)
         vol_y = center_y + (COVER_SIZE + COVER_SPACING) + COVER_SIZE_SMALL // 2 - BTN_SIZE // 2
-        
+
+        # Headphone button Y position (matches renderer constant)
+        hp_y = center_y - (COVER_SIZE + COVER_SPACING) - COVER_SIZE_SMALL // 2 + BTN_SIZE // 2
+
         # Portrait mode: check if X is in button column
         if CONTROLS_X - PLAY_BTN_SIZE <= x <= CONTROLS_X + PLAY_BTN_SIZE:
             button_pressed = None
-            
+
+            # Headphone: Y = hp_y (~107) — only active when BT device connected
+            if hp_y - BTN_SIZE <= y <= hp_y + BTN_SIZE and self.bluetooth.connected_device:
+                button_pressed = 'headphone'
+                self.bluetooth.toggle_audio()
             # Prev: Y = center_y - btn_spacing (485)
-            if center_y - btn_spacing - BTN_SIZE <= y <= center_y - btn_spacing + BTN_SIZE:
+            elif center_y - btn_spacing - BTN_SIZE <= y <= center_y - btn_spacing + BTN_SIZE:
                 button_pressed = 'prev'
                 self._skip_track(self.api.prev)
             # Play: Y = center_y (640)
@@ -1936,6 +1966,9 @@ class Berry:
             return
         # Short tap: toggle volume
         self.volume.toggle()
+        # Also set BT sink volume when BT audio is active
+        if self._bt_audio_active:
+            self.bluetooth.set_volume(self.volume.headphone_level)
         self._last_action_time = time.time()
         self._volume_hold_start = None
     
@@ -1981,6 +2014,12 @@ class Berry:
             auto_pause_minutes=self.settings.auto_pause_minutes,
             progress_expiry_hours=self.settings.progress_expiry_hours,
             app_version_label=self.app_version_label,
+            bt_connected=self.bluetooth.connected_device is not None,
+            bt_audio_active=self._bt_audio_active,
+            bt_connected_name=self.bluetooth.connected_device.name if self.bluetooth.connected_device else None,
+            bt_paired_devices=self.bluetooth.paired_devices,
+            bt_discovered_devices=self.bluetooth.discovered_devices,
+            bt_scanning=self.bluetooth.scanning,
         )
         return self.renderer.draw(ctx)
 

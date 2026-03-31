@@ -126,6 +126,19 @@ VOLUME_LEVELS = [
 ]
 
 # ============================================
+# BLUETOOTH
+# ============================================
+
+# WM8960 PipeWire sink name (constant on this hardware)
+WM8960_SINK = 'alsa_output.platform-soc_sound.stereo-fallback'
+
+# How often to poll BT connection state (seconds)
+BT_MONITOR_INTERVAL = 5.0
+
+# How long to scan for new devices (seconds)
+BT_SCAN_DURATION = 20.0
+
+# ============================================
 # TIMING
 # ============================================
 
