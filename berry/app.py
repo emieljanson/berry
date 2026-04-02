@@ -1377,7 +1377,7 @@ class Berry:
             if not api_fn():
                 time.sleep(1)
                 if not api_fn():
-                    self._show_toast('Niet verbonden')
+                    self._show_toast('Not connected')
 
         run_async(_do_skip)
 
