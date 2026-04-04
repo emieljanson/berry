@@ -28,8 +28,6 @@ My setup:
 - [WM8960 Audio HAT](https://www.waveshare.com/wm8960-audio-hat.htm)
 - SD card (16GB+)
 
-See [pi/README.md](pi/README.md) for detailed setup instructions.
-
 ## Quick Start
 
 ### 1. Flash Raspberry Pi OS
@@ -72,31 +70,6 @@ Touchscreen + Speaker
 ```
 
 Albums and playlists you play are automatically saved to the device. Kids can then browse and play them independently from the touchscreen.
-
-## Development
-
-### Local (no Pi needed)
-
-```bash
-git clone https://github.com/emieljanson/berry.git
-cd berry
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-./run.sh  # Runs in mock mode with simulated playback
-```
-
-### On a Pi
-
-```bash
-./dev-pi.sh  # Syncs changes to Pi over SSH and streams logs
-```
-
-### Tests
-
-```bash
-pytest tests/ -v
-```
 
 ## Settings Menu
 
