@@ -96,6 +96,14 @@ To close the menu, tap the **✕** in the top-right corner.
 
 During installation, Berry asks if you'd like to share anonymous usage data. This helps improve the project. Only session-level events are collected (play/pause, sleep/wake) — no personal data or music choices. The choice is made once during setup.
 
+## Known Issues
+
+**Spotify "audio key error" — tracks skip without playing.** This is an upstream issue in librespot (the library that handles Spotify Connect). It affects some Spotify accounts but not others, and there's no fix yet. Berry uses [go-librespot](https://github.com/devgianlu/go-librespot) which is affected by the same problem. Track the issue here: [librespot-org/librespot#1649](https://github.com/librespot-org/librespot/issues/1649)
+
+## Show Off Your Build
+
+Built a Berry? I'd love to see it! Share a photo on Twitter/X and tag [@emieljanson](https://x.com/emieljanson).
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
