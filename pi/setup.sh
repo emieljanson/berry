@@ -109,12 +109,6 @@ ExecStart=-/usr/bin/plymouth quit --retain-splash
 DROPEOF
   echo "  Plymouth boot splash configured"
   BOOT_CHANGED=true
-
-  # Pre-render framebuffer splash for instant boot display
-  cd ~/mello
-  if [ -d "venv" ]; then
-    venv/bin/python pi/splash-fb.py render 2>/dev/null || echo "  splash-fb render skipped (will generate on first boot)"
-  fi
 fi
 
 # ============================================

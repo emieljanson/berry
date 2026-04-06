@@ -468,7 +468,7 @@ _migrate_005() {
 }
 
 # ============================================
-# Migration 006: Plymouth boot splash
+# Migration 006: Plymouth boot splash (plain black)
 # ============================================
 _migrate_006() {
   local CODE_DIR="$HOME/mello"
@@ -477,7 +477,7 @@ _migrate_006() {
   sudo apt-get update -qq
   sudo apt-get install -y -qq plymouth plymouth-themes
 
-  # 2. Copy theme files to system directory
+  # 2. Copy theme files (plain black screen) to system directory
   local THEME_DIR="/usr/share/plymouth/themes/mello"
   sudo mkdir -p "$THEME_DIR"
   sudo cp "$CODE_DIR/pi/plymouth/"* "$THEME_DIR/"
@@ -485,17 +485,30 @@ _migrate_006() {
   # 3. Set Mello as the default Plymouth theme
   sudo plymouth-set-default-theme mello
 
-  # 4. Add plymouth.ignore-serial-consoles to cmdline.txt
-  #    Prevents Plymouth from disabling itself on serial console setups
+  # 4. Configure cmdline.txt
   local BOOT_CMDLINE="/boot/firmware/cmdline.txt"
   [ -f "$BOOT_CMDLINE" ] || BOOT_CMDLINE="/boot/cmdline.txt"
   if [ -f "$BOOT_CMDLINE" ]; then
+    # Prevent Plymouth from disabling itself on serial console setups
     if ! grep -q "plymouth.ignore-serial-consoles" "$BOOT_CMDLINE"; then
       sudo sed -i 's/$/ plymouth.ignore-serial-consoles/' "$BOOT_CMDLINE"
     fi
+    # Move kernel console off tty1 so the display stays clean
+    if grep -q "console=tty1" "$BOOT_CMDLINE"; then
+      sudo sed -i 's/console=tty1/console=tty3/' "$BOOT_CMDLINE"
+    fi
   fi
 
-  # 5. Update initramfs to include Plymouth
+  # 5. Keep Plymouth splash on framebuffer until the app renders over it
+  sudo mkdir -p /etc/systemd/system/plymouth-quit.service.d
+  cat <<'DROPEOF' | sudo tee /etc/systemd/system/plymouth-quit.service.d/retain-splash.conf > /dev/null
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/plymouth quit --retain-splash
+DROPEOF
+  sudo systemctl daemon-reload
+
+  # 6. Update initramfs to include Plymouth
   if ls /boot/initrd* &>/dev/null || ls /boot/firmware/initramfs* &>/dev/null; then
     sudo update-initramfs -u
   else
@@ -503,53 +516,6 @@ _migrate_006() {
   fi
 
   log "Plymouth boot splash installed — takes effect on next reboot"
-}
-
-# ============================================
-# Migration 007: Smooth boot transitions
-# ============================================
-_migrate_007() {
-  # 1. Move kernel console off tty1 so the display stays clean
-  local BOOT_CMDLINE="/boot/firmware/cmdline.txt"
-  [ -f "$BOOT_CMDLINE" ] || BOOT_CMDLINE="/boot/cmdline.txt"
-  if [ -f "$BOOT_CMDLINE" ] && grep -q "console=tty1" "$BOOT_CMDLINE"; then
-    sudo sed -i 's/console=tty1/console=tty3/' "$BOOT_CMDLINE"
-  fi
-
-  # 2. Keep Plymouth splash on framebuffer until the app renders over it
-  #    --retain-splash keeps the logo visible after Plymouth daemon exits
-  sudo mkdir -p /etc/systemd/system/plymouth-quit.service.d
-  cat <<'DROPEOF' | sudo tee /etc/systemd/system/plymouth-quit.service.d/retain-splash.conf > /dev/null
-[Service]
-ExecStart=
-ExecStart=-/usr/bin/plymouth quit --retain-splash
-DROPEOF
-  # Clean up old override if present
-  sudo rm -f /etc/systemd/system/plymouth-quit.service.d/wait-for-app.conf
-  sudo systemctl daemon-reload
-
-  log "Smooth boot transitions configured — takes effect on next reboot"
-}
-
-# ============================================
-# Migration 008: Plymouth rotation fix + framebuffer pre-splash
-# ============================================
-_migrate_008() {
-  local CODE_DIR="$HOME/mello"
-
-  # 1. Update Plymouth theme with rotated logo
-  local THEME_DIR="/usr/share/plymouth/themes/mello"
-  if [ -d "$THEME_DIR" ]; then
-    sudo cp "$CODE_DIR/pi/plymouth/"* "$THEME_DIR/"
-    sudo update-initramfs -u
-    log "Plymouth theme updated with rotated logo"
-  fi
-
-  # 2. Pre-render framebuffer splash for instant boot display
-  if [ -f "$CODE_DIR/pi/splash-fb.py" ]; then
-    cd "$CODE_DIR"
-    venv/bin/python pi/splash-fb.py render 2>/dev/null || log "WARNING: splash-fb render failed (non-critical)"
-  fi
 }
 
 # ============================================
@@ -561,5 +527,3 @@ run_migration "003" "Dynamic username support"
 run_migration "004" "Berry to Mello rebrand"
 run_migration "005" "Tomo to Mello rebrand"
 run_migration "006" "Plymouth boot splash"
-run_migration "007" "Smooth boot transitions"
-run_migration "008" "Plymouth rotation fix and framebuffer pre-splash"

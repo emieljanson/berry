@@ -136,19 +136,39 @@ class Mello:
         self._log_video_info()
 
     def _show_boot_splash(self):
-        """Show Mello logo immediately after display init.
+        """Show Mello logo on dark background with gradient.
 
-        Plymouth's logo disappears when pygame takes over the DRM device.
-        Showing the same logo here bridges the gap until the app is ready.
+        Plymouth shows plain black during early boot.  Once pygame takes
+        over the DRM device we paint the logo + top gradient so the user
+        sees something familiar while the rest of the app initialises.
         """
         try:
-            logo_path = os.path.join(
-                os.path.dirname(__file__), '..', 'pi', 'plymouth', 'mello-logo-boot.png'
-            )
+            logo_path = os.path.join(ICONS_DIR, 'mello-logo.png')
             if not os.path.exists(logo_path):
                 return
-            logo = pygame.image.load(logo_path)
-            self.screen.fill((0, 0, 0))
+            logo = pygame.image.load(logo_path).convert_alpha()
+            # Scale to 320px wide (same as idle screen)
+            logo_width = 320
+            scale = logo_width / logo.get_width()
+            logo = pygame.transform.smoothscale(
+                logo, (logo_width, int(logo.get_height() * scale))
+            )
+            # Rotate for portrait display
+            logo = pygame.transform.rotate(logo, -90)
+
+            # Background with top gradient (matches carousel background)
+            bg = (13, 13, 13)
+            self.screen.fill(bg)
+            for offset in range(150):
+                x = SCREEN_WIDTH - 1 - offset
+                alpha = int(30 * (1 - offset / 150))
+                color = (
+                    min(255, bg[0] + int(alpha * 0.75)),
+                    min(255, bg[1] + int(alpha * 0.4)),
+                    min(255, bg[2] + alpha),
+                )
+                pygame.draw.line(self.screen, color, (x, 0), (x, SCREEN_HEIGHT))
+
             x = (self.screen.get_width() - logo.get_width()) // 2
             y = (self.screen.get_height() - logo.get_height()) // 2
             self.screen.blit(logo, (x, y))
