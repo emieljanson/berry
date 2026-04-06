@@ -209,8 +209,10 @@ fi
 # ============================================
 if [ -d /usr/share/plymouth/themes/mello ]; then
   PLYMOUTH_CHANGED=false
-  for f in mello-logo-boot.png mello.script mello.plymouth; do
-    if ! diff -q "$CODE_DIR/pi/plymouth/$f" "/usr/share/plymouth/themes/mello/$f" &>/dev/null; then
+  for f in "$CODE_DIR/pi/plymouth/"*; do
+    local fname
+    fname=$(basename "$f")
+    if ! diff -q "$f" "/usr/share/plymouth/themes/mello/$fname" &>/dev/null; then
       PLYMOUTH_CHANGED=true
       break
     fi
@@ -219,6 +221,11 @@ if [ -d /usr/share/plymouth/themes/mello ]; then
     log "Updating Plymouth boot splash theme"
     sudo cp "$CODE_DIR/pi/plymouth/"* /usr/share/plymouth/themes/mello/
     sudo update-initramfs -u
+    # Re-render framebuffer pre-splash
+    if [ -f "$CODE_DIR/pi/splash-fb.py" ]; then
+      cd "$CODE_DIR"
+      venv/bin/python pi/splash-fb.py render 2>/dev/null || true
+    fi
   fi
 fi
 

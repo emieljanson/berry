@@ -9,6 +9,7 @@ User=__USER__
 SupplementaryGroups=video audio input render bluetooth
 WorkingDirectory=__HOME__/mello
 ExecStartPre=-/bin/bash -c 'LOG=__HOME__/mello/mello.log; [ -s "$LOG" ] && mv "$LOG" "$LOG.$(date +%%Y%%m%%d-%%H%%M%%S)"; find __HOME__/mello -maxdepth 1 -name "mello.log.*" \( -mtime +7 -o -size +50M \) -delete'
+ExecStartPre=-/bin/dd if=__HOME__/mello/pi/mello-splash.raw of=/dev/fb0 bs=1440
 ExecStart=__HOME__/mello/venv/bin/python -u mello.py --fullscreen
 Restart=always
 RestartSec=5
@@ -17,8 +18,6 @@ StandardOutput=append:__HOME__/mello/mello.log
 StandardError=append:__HOME__/mello/mello.log
 StandardInput=tty
 TTYPath=/dev/tty1
-TTYReset=yes
-TTYVHangup=yes
 PAMName=login
 Environment=HOME=__HOME__
 Environment=XDG_RUNTIME_DIR=/run/user/__UID__

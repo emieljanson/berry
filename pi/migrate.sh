@@ -480,9 +480,7 @@ _migrate_006() {
   # 2. Copy theme files to system directory
   local THEME_DIR="/usr/share/plymouth/themes/mello"
   sudo mkdir -p "$THEME_DIR"
-  sudo cp "$CODE_DIR/pi/plymouth/mello.plymouth" "$THEME_DIR/"
-  sudo cp "$CODE_DIR/pi/plymouth/mello.script" "$THEME_DIR/"
-  sudo cp "$CODE_DIR/pi/plymouth/mello-logo-boot.png" "$THEME_DIR/"
+  sudo cp "$CODE_DIR/pi/plymouth/"* "$THEME_DIR/"
 
   # 3. Set Mello as the default Plymouth theme
   sudo plymouth-set-default-theme mello
@@ -508,6 +506,53 @@ _migrate_006() {
 }
 
 # ============================================
+# Migration 007: Smooth boot transitions
+# ============================================
+_migrate_007() {
+  # 1. Move kernel console off tty1 so the display stays clean
+  local BOOT_CMDLINE="/boot/firmware/cmdline.txt"
+  [ -f "$BOOT_CMDLINE" ] || BOOT_CMDLINE="/boot/cmdline.txt"
+  if [ -f "$BOOT_CMDLINE" ] && grep -q "console=tty1" "$BOOT_CMDLINE"; then
+    sudo sed -i 's/console=tty1/console=tty3/' "$BOOT_CMDLINE"
+  fi
+
+  # 2. Keep Plymouth splash on framebuffer until the app renders over it
+  #    --retain-splash keeps the logo visible after Plymouth daemon exits
+  sudo mkdir -p /etc/systemd/system/plymouth-quit.service.d
+  cat <<'DROPEOF' | sudo tee /etc/systemd/system/plymouth-quit.service.d/retain-splash.conf > /dev/null
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/plymouth quit --retain-splash
+DROPEOF
+  # Clean up old override if present
+  sudo rm -f /etc/systemd/system/plymouth-quit.service.d/wait-for-app.conf
+  sudo systemctl daemon-reload
+
+  log "Smooth boot transitions configured — takes effect on next reboot"
+}
+
+# ============================================
+# Migration 008: Plymouth rotation fix + framebuffer pre-splash
+# ============================================
+_migrate_008() {
+  local CODE_DIR="$HOME/mello"
+
+  # 1. Update Plymouth theme with rotated logo
+  local THEME_DIR="/usr/share/plymouth/themes/mello"
+  if [ -d "$THEME_DIR" ]; then
+    sudo cp "$CODE_DIR/pi/plymouth/"* "$THEME_DIR/"
+    sudo update-initramfs -u
+    log "Plymouth theme updated with rotated logo"
+  fi
+
+  # 2. Pre-render framebuffer splash for instant boot display
+  if [ -f "$CODE_DIR/pi/splash-fb.py" ]; then
+    cd "$CODE_DIR"
+    venv/bin/python pi/splash-fb.py render 2>/dev/null || log "WARNING: splash-fb render failed (non-critical)"
+  fi
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -516,3 +561,5 @@ run_migration "003" "Dynamic username support"
 run_migration "004" "Berry to Mello rebrand"
 run_migration "005" "Tomo to Mello rebrand"
 run_migration "006" "Plymouth boot splash"
+run_migration "007" "Smooth boot transitions"
+run_migration "008" "Plymouth rotation fix and framebuffer pre-splash"
