@@ -17,8 +17,6 @@ StandardOutput=append:__HOME__/mello/mello.log
 StandardError=append:__HOME__/mello/mello.log
 StandardInput=tty
 TTYPath=/dev/tty1
-TTYReset=yes
-TTYVHangup=yes
 PAMName=login
 Environment=HOME=__HOME__
 Environment=XDG_RUNTIME_DIR=/run/user/__UID__

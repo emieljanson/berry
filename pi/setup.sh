@@ -81,6 +81,34 @@ if [ -n "$BOOT_CONFIG" ]; then
     echo "  Quiet boot configured"
     BOOT_CHANGED=true
   fi
+
+  # Plymouth boot splash (Mello logo on black during boot)
+  echo "Installing Plymouth boot splash..."
+  sudo apt-get install -y -qq plymouth plymouth-themes
+  sudo mkdir -p /usr/share/plymouth/themes/mello
+  sudo cp ~/mello/pi/plymouth/* /usr/share/plymouth/themes/mello/
+  sudo plymouth-set-default-theme mello
+  if [ -f "$BOOT_CMDLINE" ] && ! grep -q "plymouth.ignore-serial-consoles" "$BOOT_CMDLINE"; then
+    sudo sed -i 's/$/ plymouth.ignore-serial-consoles/' "$BOOT_CMDLINE"
+  fi
+  if ls /boot/initrd* &>/dev/null || ls /boot/firmware/initramfs* &>/dev/null; then
+    sudo update-initramfs -u
+  else
+    sudo update-initramfs -c -k "$(uname -r)"
+  fi
+  # Move kernel console off tty1 so the display stays clean
+  if [ -f "$BOOT_CMDLINE" ] && grep -q "console=tty1" "$BOOT_CMDLINE"; then
+    sudo sed -i 's/console=tty1/console=tty3/' "$BOOT_CMDLINE"
+  fi
+  # Keep Plymouth splash on framebuffer until the app renders over it
+  sudo mkdir -p /etc/systemd/system/plymouth-quit.service.d
+  cat <<'DROPEOF' | sudo tee /etc/systemd/system/plymouth-quit.service.d/retain-splash.conf > /dev/null
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/plymouth quit --retain-splash
+DROPEOF
+  echo "  Plymouth boot splash configured"
+  BOOT_CHANGED=true
 fi
 
 # ============================================
