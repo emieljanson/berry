@@ -96,6 +96,17 @@ if [ -n "$BOOT_CONFIG" ]; then
   else
     sudo update-initramfs -c -k "$(uname -r)"
   fi
+  # Move kernel console off tty1 so the display stays clean
+  if [ -f "$BOOT_CMDLINE" ] && grep -q "console=tty1" "$BOOT_CMDLINE"; then
+    sudo sed -i 's/console=tty1/console=tty3/' "$BOOT_CMDLINE"
+  fi
+  # Keep Plymouth splash on framebuffer until the app renders over it
+  sudo mkdir -p /etc/systemd/system/plymouth-quit.service.d
+  cat <<'DROPEOF' | sudo tee /etc/systemd/system/plymouth-quit.service.d/retain-splash.conf > /dev/null
+[Service]
+ExecStart=
+ExecStart=-/usr/bin/plymouth quit --retain-splash
+DROPEOF
   echo "  Plymouth boot splash configured"
   BOOT_CHANGED=true
 fi

@@ -43,16 +43,18 @@ class Mello:
         # Previous run may have been killed during sleep, leaving
         # backlight/DPMS off. Must happen before kmsdrm init.
         SleepManager.restore_display()
-        
-        # Try GPU-accelerated driver first on Raspberry Pi
+
+        # Fast path: init display and show boot splash BEFORE the heavy
+        # pygame.init() so the user sees the logo instead of a black screen.
         self._setup_video_driver()
-        
+        self._init_display_early(fullscreen)
+
+        # Now init remaining subsystems (splash is already visible).
+        # pygame.init() is idempotent for already-inited subsystems.
         pygame.init()
         pygame.mixer.quit()  # Release audio device for go-librespot
         pygame.display.set_caption('Mello')
-        
-        # Initialize display and components
-        self._init_display(fullscreen)
+
         self._init_components()
     
     def _check_kms_available(self) -> bool:
@@ -81,67 +83,100 @@ class Mello:
         return False
     
     def _setup_video_driver(self):
-        """Configure optimal video driver for the platform."""
-        # Skip if already set
+        """Select optimal video driver (env var only, no init)."""
         if os.environ.get('SDL_VIDEODRIVER'):
             return
-        
-        # Only try kmsdrm on Raspberry Pi
         if not os.path.exists('/proc/device-tree/model'):
             return
-        
-        # Check if KMS/DRM is likely configured
-        kms_configured = self._check_kms_available()
-        
-        # Try kmsdrm for GPU acceleration
-        os.environ['SDL_VIDEODRIVER'] = 'kmsdrm'
+        if self._check_kms_available():
+            os.environ['SDL_VIDEODRIVER'] = 'kmsdrm'
+
+    def _init_display_early(self, fullscreen: bool):
+        """Init display and show boot splash as fast as possible.
+
+        Called BEFORE pygame.init() so the logo appears immediately
+        instead of a black screen while subsystems initialize.
+        """
+        _t0 = time.monotonic()
+        # Init display subsystem only (not all of pygame)
         try:
             pygame.display.init()
-            pygame.display.quit()  # Success - will reinit in pygame.init()
-            logger.info('Using kmsdrm (GPU accelerated)')
+            logger.info(f'Display driver: {os.environ.get("SDL_VIDEODRIVER", "default")} '
+                        f'(display.init took {time.monotonic()-_t0:.2f}s)')
         except pygame.error as e:
-            # Fall back to default driver
-            del os.environ['SDL_VIDEODRIVER']
-            error_msg = str(e) if e else 'unknown error'
-            logger.warning(f'kmsdrm driver failed: {error_msg}')
-            
-            if not kms_configured:
-                logger.warning('=' * 60)
-                logger.warning('GPU ACCELERATION NOT AVAILABLE')
-                logger.warning('=' * 60)
-                logger.warning('To enable GPU acceleration on Raspberry Pi:')
-                logger.warning('  1. Run: sudo raspi-config')
-                logger.warning('  2. Navigate to: Advanced Options > GL Driver')
-                logger.warning('  3. Select: G1 GL (Full KMS)')
-                logger.warning('  4. Reboot the Pi')
-                logger.warning('=' * 60)
-            else:
-                logger.warning('KMS/DRM appears configured but kmsdrm driver failed.')
-                logger.warning('This may indicate a driver compatibility issue.')
-            logger.info('Falling back to default driver (software rendering)')
-    
-    def _init_display(self, fullscreen: bool):
-        """Initialize the display with optimal settings."""
+            # kmsdrm failed — fall back to default driver
+            driver = os.environ.pop('SDL_VIDEODRIVER', None)
+            if driver:
+                logger.warning(f'{driver} driver failed ({e}), using default')
+            pygame.display.init()
+
         flags = pygame.DOUBLEBUF
         if fullscreen:
             flags |= pygame.FULLSCREEN
-        
+
+        _t1 = time.monotonic()
         try:
             self.screen = pygame.display.set_mode(
-                (SCREEN_WIDTH, SCREEN_HEIGHT), 
+                (SCREEN_WIDTH, SCREEN_HEIGHT),
                 flags | pygame.HWSURFACE
             )
         except pygame.error:
             self.screen = pygame.display.set_mode(
-                (SCREEN_WIDTH, SCREEN_HEIGHT), 
+                (SCREEN_WIDTH, SCREEN_HEIGHT),
                 flags
             )
-        
+        logger.info(f'set_mode took {time.monotonic()-_t1:.2f}s')
+
+        # Show boot splash immediately — bridges Plymouth → app transition
+        self._show_boot_splash()
+
         self.clock = pygame.time.Clock()
         pygame.mouse.set_visible(not fullscreen)
-        
+
         self._log_video_info()
-    
+
+    def _show_boot_splash(self):
+        """Show Mello logo on dark background with gradient.
+
+        Plymouth shows plain black during early boot.  Once pygame takes
+        over the DRM device we paint the logo + top gradient so the user
+        sees something familiar while the rest of the app initialises.
+        """
+        try:
+            logo_path = os.path.join(ICONS_DIR, 'mello-logo.png')
+            if not os.path.exists(logo_path):
+                return
+            logo = pygame.image.load(logo_path).convert_alpha()
+            # Scale to 320px wide (same as idle screen)
+            logo_width = 320
+            scale = logo_width / logo.get_width()
+            logo = pygame.transform.smoothscale(
+                logo, (logo_width, int(logo.get_height() * scale))
+            )
+            # Rotate for portrait display
+            logo = pygame.transform.rotate(logo, -90)
+
+            # Background with top gradient (matches carousel background)
+            bg = (13, 13, 13)
+            self.screen.fill(bg)
+            for offset in range(150):
+                x = SCREEN_WIDTH - 1 - offset
+                alpha = int(30 * (1 - offset / 150))
+                color = (
+                    min(255, bg[0] + int(alpha * 0.75)),
+                    min(255, bg[1] + int(alpha * 0.4)),
+                    min(255, bg[2] + alpha),
+                )
+                pygame.draw.line(self.screen, color, (x, 0), (x, SCREEN_HEIGHT))
+
+            x = (self.screen.get_width() - logo.get_width()) // 2
+            y = (self.screen.get_height() - logo.get_height()) // 2
+            self.screen.blit(logo, (x, y))
+            pygame.display.flip()
+            logger.info('Boot splash displayed')
+        except Exception as e:
+            logger.warning(f'Could not show boot splash: {e}')
+
     def _init_components(self):
         """Initialize all application components."""
         self.app_version_label = get_runtime_version_label()
