@@ -8,7 +8,7 @@ Type=simple
 User=__USER__
 SupplementaryGroups=video audio input render bluetooth
 WorkingDirectory=__HOME__/mello
-ExecStartPre=-/bin/rm -f __HOME__/mello/mello.log
+ExecStartPre=-/bin/bash -c 'LOG=__HOME__/mello/mello.log; [ -s "$LOG" ] && mv "$LOG" "$LOG.$(date +%%Y%%m%%d-%%H%%M%%S)"; find __HOME__/mello -maxdepth 1 -name "mello.log.*" \( -mtime +7 -o -size +50M \) -delete'
 ExecStart=__HOME__/mello/venv/bin/python -u mello.py --fullscreen
 Restart=always
 RestartSec=5
