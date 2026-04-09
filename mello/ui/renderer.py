@@ -773,8 +773,13 @@ class Renderer:
         if ctx.bt_discovered_devices:
             items.append(('header', 'Found'))
             for i, dev in enumerate(ctx.bt_discovered_devices):
-                label = dev.name if len(dev.name) <= 22 else dev.name[:20] + '..'
-                items.append(('button', f'bt_discovered_{i}', label, COLORS['bg_elevated']))
+                if ctx.bt_pairing_mac == dev.mac:
+                    label = 'Connecting...'
+                    color = COLORS['accent']
+                else:
+                    label = dev.name if len(dev.name) <= 22 else dev.name[:20] + '..'
+                    color = COLORS['bg_elevated']
+                items.append(('button', f'bt_discovered_{i}', label, color))
         elif ctx.bt_scanning:
             items.append(('header', 'Searching...'))
             items.append(('placeholder',))
