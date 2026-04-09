@@ -1,12 +1,13 @@
 """
 Bluetooth Manager - BT device discovery, pairing, and audio routing.
 
-Uses bluetoothctl (subprocess) for BlueZ interaction and pactl for PipeWire
-audio sink switching. Follows the existing pattern in setup_menu.py (nmcli).
+Uses the BlueZ D-Bus API (via dbus-fast) for device discovery and pairing,
+and pactl for PipeWire audio sink switching.
 
 Pi 3B BCM43430A1 quirk: adapter often connects without resolving A2DP services.
 A full BT service restart before reconnect fixes this reliably.
 """
+import asyncio
 import re
 import sys
 import logging
@@ -21,9 +22,26 @@ from ..config import WM8960_SINK, BT_MONITOR_INTERVAL, BT_SCAN_DURATION
 logger = logging.getLogger(__name__)
 
 AUDIO_SINK_UUID = '0000110b-0000-1000-8000-00805f9b34fb'
-_MAC_NAME_RE = re.compile(r'^([0-9A-Fa-f]{2}[-:]){3,}')
+AUDIO_ICONS = {'audio-headphones', 'audio-headset', 'audio-card'}
+
+BLUEZ_SERVICE = 'org.bluez'
+ADAPTER_PATH = '/org/bluez/hci0'
+ADAPTER_IFACE = 'org.bluez.Adapter1'
+DEVICE_IFACE = 'org.bluez.Device1'
+PROPS_IFACE = 'org.freedesktop.DBus.Properties'
+OBJ_MGR_IFACE = 'org.freedesktop.DBus.ObjectManager'
 
 
+def _is_audio_device_props(props: dict) -> bool:
+    """Check if a D-Bus device has audio capabilities."""
+    icon = props.get('Icon', '')
+    if icon in AUDIO_ICONS:
+        return True
+    uuids = props.get('UUIDs', [])
+    return AUDIO_SINK_UUID in uuids
+
+
+# Legacy helper for bluetoothctl-based code paths (monitoring, connect)
 def _is_audio_device(info: str) -> bool:
     return AUDIO_SINK_UUID in info or 'audio-headset' in info or 'audio-headphones' in info
 
@@ -59,9 +77,10 @@ class BluetoothManager:
         self._audio_active: bool = False
         self._desired_sink: Optional[str] = None
 
-        self._scan_process: Optional[subprocess.Popen] = None
         self._scanning: bool = False
+        self._pairing_mac: Optional[str] = None
         self._scan_stop_event = threading.Event()
+        self._scan_thread: Optional[threading.Thread] = None
 
         self._monitor_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -100,6 +119,11 @@ class BluetoothManager:
         with self._lock:
             return self._scanning
 
+    @property
+    def pairing_mac(self) -> Optional[str]:
+        with self._lock:
+            return self._pairing_mac
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -126,89 +150,130 @@ class BluetoothManager:
         self.stop_scan()
 
     # ------------------------------------------------------------------
-    # Scanning (settings menu)
+    # D-Bus scan (settings menu)
     # ------------------------------------------------------------------
 
     def start_scan(self):
-        """Start continuous BT discovery in background until stop_scan()."""
+        """Start BT discovery via BlueZ D-Bus API in background."""
         self._scan_stop_event.clear()
 
         def _do():
-            self._restart_adapter()
-            with self._lock:
-                self._scanning = True
-            self._on_invalidate()
-
-            discovered: dict[str, BluetoothDevice] = {}
-            while not self._scan_stop_event.is_set():
-                try:
-                    proc = subprocess.Popen(
-                        ['bluetoothctl', '--timeout', str(int(BT_SCAN_DURATION)), 'scan', 'on'],
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                    )
-                    with self._lock:
-                        self._scan_process = proc
-
-                    for line in proc.stdout:
-                        line = line.strip()
-                        m = re.match(r'\[NEW\]\s+Device\s+([0-9A-Fa-f:]{17})\s+(.*)', line)
-                        if not m:
-                            m = re.match(r'\[CHG\]\s+Device\s+([0-9A-Fa-f:]{17})\s+Name:\s+(.*)', line)
-                        if m:
-                            mac, name = m.group(1), m.group(2).strip()
-                            if not _MAC_NAME_RE.match(name):
-                                discovered[mac] = BluetoothDevice(mac=mac, name=name)
-                                self._update_discovered(discovered)
-                except Exception as e:
-                    logger.warning(f'Bluetooth: scan error: {e}')
-                finally:
-                    with self._lock:
-                        self._scan_process = None
-                    self._filter_audio_devices(discovered)
-                    self.refresh_paired()
-                    self._on_invalidate()
-
-            with self._lock:
-                self._scanning = False
-            self._on_invalidate()
-
-        threading.Thread(target=_do, daemon=True).start()
-
-    def stop_scan(self):
-        self._scan_stop_event.set()
-        with self._lock:
-            proc = self._scan_process
-            self._scan_process = None
-        if proc:
             try:
-                proc.terminate()
-            except Exception:
-                pass
+                logger.info('Bluetooth: scan started')
+                if not self._is_adapter_powered():
+                    self._restart_adapter()
+                with self._lock:
+                    self._scanning = True
+                self._on_invalidate()
+
+                asyncio.run(self._dbus_scan_loop())
+            except Exception as e:
+                logger.error(f'Bluetooth: scan error: {e}', exc_info=True)
+            finally:
+                with self._lock:
+                    self._scanning = False
+                self._on_invalidate()
+
+        t = threading.Thread(target=_do, daemon=True)
+        self._scan_thread = t
+        t.start()
+
+    async def _dbus_scan_loop(self):
+        """Run BR/EDR discovery cycles via D-Bus until stop_scan()."""
+        from dbus_fast.aio import MessageBus
+        from dbus_fast import BusType, Variant
+
+        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
         try:
-            subprocess.run(['bluetoothctl', 'scan', 'off'], timeout=3, capture_output=True)
-        except Exception:
-            pass
+            intr = await bus.introspect(BLUEZ_SERVICE, ADAPTER_PATH)
+            obj = bus.get_proxy_object(BLUEZ_SERVICE, ADAPTER_PATH, intr)
+            adapter = obj.get_interface(ADAPTER_IFACE)
+            adapter_props = obj.get_interface(PROPS_IFACE)
 
-    def _update_discovered(self, discovered: dict):
-        paired_macs = {d.mac for d in self._paired_devices}
-        with self._lock:
-            self._discovered_devices = [d for mac, d in discovered.items() if mac not in paired_macs]
-        self._on_invalidate()
+            # Ensure powered
+            await adapter_props.call_set(ADAPTER_IFACE, 'Powered', Variant('b', True))
 
-    def _filter_audio_devices(self, discovered: dict):
-        """Keep only audio-capable discovered devices."""
-        if sys.platform != 'linux':
+            while not self._scan_stop_event.is_set():
+                # Set transport filter to BR/EDR (classic BT for audio devices).
+                # Default LE-only scan on Pi 3B misses devices like AirPods Max.
+                await adapter.call_set_discovery_filter({
+                    'Transport': Variant('s', 'bredr'),
+                })
+
+                logger.info('Bluetooth: starting D-Bus bredr discovery')
+                try:
+                    await adapter.call_start_discovery()
+                except Exception as e:
+                    logger.warning(f'Bluetooth: start discovery failed: {e}')
+
+                # Poll discovered devices periodically during scan
+                deadline = time.monotonic() + BT_SCAN_DURATION
+                while time.monotonic() < deadline and not self._scan_stop_event.is_set():
+                    await self._dbus_poll_devices(bus)
+                    await asyncio.sleep(3)
+
+                try:
+                    await adapter.call_stop_discovery()
+                except Exception as e:
+                    logger.debug(f'Bluetooth: stop_discovery ignored: {e}')
+
+                # Final poll + audio filter
+                await self._dbus_poll_devices(bus, filter_audio=True)
+                self.refresh_paired()
+                self._on_invalidate()
+                logger.info(f'Bluetooth: scan cycle done')
+        finally:
+            bus.disconnect()
+
+    async def _dbus_poll_devices(self, bus, filter_audio: bool = False):
+        """Read all discovered devices from BlueZ ObjectManager."""
+        from dbus_fast import Variant
+
+        try:
+            root_intr = await bus.introspect(BLUEZ_SERVICE, '/')
+            root = bus.get_proxy_object(BLUEZ_SERVICE, '/', root_intr)
+            mgr = root.get_interface(OBJ_MGR_IFACE)
+            objects = await mgr.call_get_managed_objects()
+        except Exception as e:
+            logger.warning(f'Bluetooth: D-Bus poll error: {e}')
             return
+
         paired_macs = {d.mac for d in self._paired_devices}
-        audio_macs = set()
-        for mac in discovered:
-            if mac not in paired_macs:
-                info = self._get_device_info(mac)
-                if _is_audio_device(info):
-                    audio_macs.add(mac)
+        discovered: List[BluetoothDevice] = []
+
+        for path, ifaces in objects.items():
+            if DEVICE_IFACE not in ifaces:
+                continue
+            props = ifaces[DEVICE_IFACE]
+            name = props.get('Name', Variant('s', '')).value
+            addr = props.get('Address', Variant('s', '')).value
+            paired = props.get('Paired', Variant('b', False)).value
+            connected = props.get('Connected', Variant('b', False)).value
+            icon = props.get('Icon', Variant('s', '')).value
+            uuids = [u.value if hasattr(u, 'value') else u
+                     for u in props.get('UUIDs', Variant('as', [])).value]
+
+            if not name or paired or addr in paired_macs:
+                continue
+
+            is_audio = icon in AUDIO_ICONS or AUDIO_SINK_UUID in uuids
+            if filter_audio and not is_audio:
+                continue
+
+            discovered.append(BluetoothDevice(
+                mac=addr, name=name, is_audio=is_audio,
+            ))
+
         with self._lock:
-            self._discovered_devices = [d for d in self._discovered_devices if d.mac in audio_macs]
+            self._discovered_devices = discovered
         self._on_invalidate()
+
+    def stop_scan(self, wait: bool = False):
+        logger.info('Bluetooth: stop_scan requested')
+        self._scan_stop_event.set()
+        if wait and self._scan_thread is not None:
+            self._scan_thread.join(timeout=BT_SCAN_DURATION + 5)
+            self._scan_thread = None
 
     # ------------------------------------------------------------------
     # Paired device management
@@ -287,27 +352,125 @@ class BluetoothManager:
         threading.Thread(target=_do, daemon=True).start()
 
     def pair_and_connect(self, mac: str, name: str):
+        # Immediate UI feedback — show "Connecting..." before thread starts
+        with self._lock:
+            self._pairing_mac = mac
+        self._on_invalidate()
+
         def _do():
             logger.info(f'Bluetooth: pairing with {mac} ({name})')
-            self._on_toast(f'Pairing with {name}...')
-            self._wait_adapter_ready()
             try:
-                subprocess.run(['bluetoothctl', 'pair', mac], capture_output=True, timeout=30)
+                # Stop discovery — adapter can't pair while scanning
+                self.stop_scan(wait=True)
+                self._wait_adapter_ready()
+
+                # Pair via D-Bus with NoInputNoOutput agent (required for AirPods etc.)
+                paired = asyncio.run(self._dbus_pair(mac))
+                if not paired:
+                    self._on_toast('Pairing failed')
+                    return
+
                 subprocess.run(['bluetoothctl', 'trust', mac], capture_output=True, timeout=5)
+
+                # Move device from discovered to paired section
+                self.refresh_paired()
+                with self._lock:
+                    self._discovered_devices = [
+                        d for d in self._discovered_devices if d.mac != mac
+                    ]
+                self._on_invalidate()
+
+                sink = self._reliable_connect(mac)
+                if sink:
+                    self.refresh_paired()
+                    dev = next((d for d in self._paired_devices if d.mac == mac and d.connected), None)
+                    if dev:
+                        self._set_connected(dev, sink)
+                else:
+                    self._on_toast('Connection failed')
             except Exception as e:
                 logger.warning(f'Bluetooth: pair error: {e}')
                 self._on_toast('Pairing failed')
-                return
-            sink = self._reliable_connect(mac)
-            if sink:
-                self.refresh_paired()
-                dev = next((d for d in self._paired_devices if d.mac == mac and d.connected), None)
-                if dev:
-                    self._set_connected(dev, sink)
-            else:
-                self._on_toast('Pairing failed')
-            self._on_invalidate()
+            finally:
+                with self._lock:
+                    self._pairing_mac = None
+                self._on_invalidate()
         threading.Thread(target=_do, daemon=True).start()
+
+    async def _dbus_pair(self, mac: str) -> bool:
+        """Pair with device via D-Bus, registering a NoInputNoOutput agent."""
+        from dbus_fast.aio import MessageBus
+        from dbus_fast import BusType
+        from dbus_fast.service import ServiceInterface, method
+
+        class PairAgent(ServiceInterface):
+            """Minimal BlueZ pairing agent — auto-accepts all requests."""
+            def __init__(self):
+                super().__init__('org.bluez.Agent1')
+
+            @method()
+            def Release(self):
+                pass
+
+            @method()
+            def RequestConfirmation(self, device: 'o', passkey: 'u'):
+                pass
+
+            @method()
+            def AuthorizeService(self, device: 'o', uuid: 's'):
+                pass
+
+            @method()
+            def Cancel(self):
+                pass
+
+        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        try:
+            agent = PairAgent()
+            agent_path = '/mello/agent'
+            bus.export(agent_path, agent)
+
+            # Register agent with BlueZ
+            mgr = bus.get_proxy_object('org.bluez', '/org/bluez',
+                await bus.introspect('org.bluez', '/org/bluez'))
+            agent_mgr = mgr.get_interface('org.bluez.AgentManager1')
+            await agent_mgr.call_register_agent(agent_path, 'NoInputNoOutput')
+            await agent_mgr.call_request_default_agent(agent_path)
+
+            # Stop discovery before pairing
+            try:
+                adapter = bus.get_proxy_object('org.bluez', '/org/bluez/hci0',
+                    await bus.introspect('org.bluez', '/org/bluez/hci0'))
+                await adapter.get_interface('org.bluez.Adapter1').call_stop_discovery()
+            except Exception as e:
+                logger.debug(f'Bluetooth: stop_discovery before pair ignored: {e}')
+
+            dev_path = '/org/bluez/hci0/dev_' + mac.replace(':', '_')
+            dev_obj = bus.get_proxy_object('org.bluez', dev_path,
+                await bus.introspect('org.bluez', dev_path))
+            device = dev_obj.get_interface('org.bluez.Device1')
+
+            for attempt in range(2):
+                try:
+                    logger.info(f'Bluetooth: D-Bus pair attempt {attempt + 1}')
+                    await asyncio.wait_for(device.call_pair(), timeout=20)
+                    logger.info('Bluetooth: D-Bus pair success')
+                    return True
+                except Exception as e:
+                    logger.info(f'Bluetooth: D-Bus pair attempt {attempt + 1} failed: {e}')
+                    if attempt == 0:
+                        await asyncio.sleep(2)
+
+            return False
+        except Exception as e:
+            logger.warning(f'Bluetooth: D-Bus pair error: {e}')
+            return False
+        finally:
+            try:
+                await agent_mgr.call_unregister_agent(agent_path)
+            except Exception as e:
+                logger.debug(f'Bluetooth: unregister agent ignored: {e}')
+            bus.disconnect()
 
     def forget(self, mac: str):
         def _do():
@@ -488,14 +651,21 @@ class BluetoothManager:
             logger.warning(f'Bluetooth: move-sink-input error: {e}')
 
     def _find_bt_sink(self, retries: int = 1) -> Optional[str]:
+        """Find a Bluetooth A2DP audio sink (not HFP/HSP headset sink)."""
         for attempt in range(retries):
             try:
                 result = subprocess.run(['pactl', 'list', 'sinks', 'short'],
                                         capture_output=True, text=True, timeout=5)
                 for line in result.stdout.splitlines():
                     parts = line.split()
-                    if len(parts) >= 2 and 'bluez' in parts[1]:
-                        return parts[1]
+                    if len(parts) < 2 or 'bluez' not in parts[1]:
+                        continue
+                    # Reject HFP/HSP sinks (mono 8/16kHz) — need A2DP (stereo 44.1/48kHz)
+                    spec = ' '.join(parts[2:])
+                    if '1ch' in spec and ('8000Hz' in spec or '16000Hz' in spec):
+                        logger.info(f'Bluetooth: skipping HFP sink {parts[1]}')
+                        continue
+                    return parts[1]
             except Exception:
                 pass
             if attempt < retries - 1:
@@ -511,6 +681,12 @@ class BluetoothManager:
         try:
             subprocess.run(['sudo', 'systemctl', 'restart', 'bluetooth'],
                            timeout=10, capture_output=True)
+            time.sleep(1)
+            # BCM43430A1 fix: down+up cycle resets firmware scanning state.
+            # Without 'down', the adapter can get stuck with LE scanning
+            # returning EBUSY (-16), making discovery permanently fail.
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'down'],
+                           timeout=5, capture_output=True)
             time.sleep(2)
             subprocess.run(['sudo', 'hciconfig', 'hci0', 'up'],
                            timeout=5, capture_output=True)

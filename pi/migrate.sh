@@ -536,6 +536,52 @@ _migrate_007() {
 }
 
 # ============================================
+# Migration 008: Route go-librespot audio through PipeWire
+# ============================================
+_migrate_008() {
+  # Migration 001 changed audio_device from "plughw:CARD=..." to "default",
+  # but /etc/asound.conf routes ALSA "default" to dmix → hw:wm8960soundcard,
+  # bypassing PipeWire entirely. Audio must go through PipeWire so that
+  # pactl set-default-sink can route it to Bluetooth headphones.
+  # Catches all non-pipewire values (default, plughw:CARD=..., hw:..., etc).
+  local CONFIG="$HOME/.config/go-librespot/config.yml"
+  if [ -f "$CONFIG" ]; then
+    if grep -q 'audio_device:.*"pipewire"' "$CONFIG"; then
+      log "go-librespot already using pipewire, skipping"
+    else
+      sed -i 's|audio_device:.*|audio_device: "pipewire"|' "$CONFIG"
+      log "go-librespot config updated: audio_device -> pipewire"
+    fi
+  fi
+}
+
+# ============================================
+# Migration 009: Update sudoers for hciconfig down+up (both paths)
+# ============================================
+_migrate_009() {
+  local SUDOERS="/etc/sudoers.d/mello-wifi"
+  if [ ! -f "$SUDOERS" ]; then
+    log "sudoers file not found, skipping"
+    return
+  fi
+  # Already has hci0 down → already migrated
+  if sudo grep -q 'hciconfig hci0 down' "$SUDOERS"; then
+    log "sudoers already has hci0 down, skipping"
+    return
+  fi
+  # Replace the hciconfig entries with both /usr/bin and /usr/sbin paths for up+down
+  local TMP="/tmp/mello-sudoers-009.$$"
+  sudo sed 's|/usr/bin/hciconfig hci0 up.*|/usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up, /usr/bin/hciconfig hci0 down, /usr/sbin/hciconfig hci0 down|' "$SUDOERS" > "$TMP"
+  if sudo visudo -cf "$TMP"; then
+    sudo install -m 440 "$TMP" "$SUDOERS"
+    log "sudoers updated: added hciconfig hci0 down + /usr/sbin paths"
+  else
+    log "ERROR: sudoers validation failed, skipping"
+  fi
+  rm -f "$TMP"
+}
+
+# ============================================
 # Run all migrations
 # ============================================
 run_migration "001" "Bluetooth audio via PipeWire"
@@ -545,3 +591,5 @@ run_migration "004" "Berry to Mello rebrand"
 run_migration "005" "Tomo to Mello rebrand"
 run_migration "006" "Plymouth boot splash"
 run_migration "007" "Mask getty@tty1 (missed by older installs)"
+run_migration "008" "Route go-librespot audio through PipeWire"
+run_migration "009" "Update sudoers for hciconfig down+up"

@@ -39,6 +39,7 @@ class RenderContext:
     bt_paired_devices: List[BluetoothDevice] = field(default_factory=list)
     bt_discovered_devices: List[BluetoothDevice] = field(default_factory=list)
     bt_scanning: bool = False
+    bt_pairing_mac: Optional[str] = None
     volume_levels: list = field(default_factory=list)  # For volume settings screen
     menu_scroll_offset: int = 0
     reset_confirm_pending: bool = False

@@ -2154,6 +2154,7 @@ class Mello:
             bt_paired_devices=self.bluetooth.paired_devices,
             bt_discovered_devices=self.bluetooth.discovered_devices,
             bt_scanning=self.bluetooth.scanning,
+            bt_pairing_mac=self.bluetooth.pairing_mac,
             volume_levels=self.settings.get_volume_levels(),
             menu_scroll_offset=self.setup_menu.scroll_offset,
             update_checking=self.setup_menu._update_checking,

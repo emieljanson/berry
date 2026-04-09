@@ -161,7 +161,7 @@ if [ ! -f ~/.config/go-librespot/config.yml ]; then
 device_name: "Mello"
 device_type: "speaker"
 audio_backend: "alsa"
-audio_device: "default"
+audio_device: "pipewire"
 external_volume: true
 initial_volume: 100
 bitrate: 320
@@ -341,7 +341,7 @@ sudo systemctl stop getty@tty1.service 2>/dev/null || true
 # without a password prompt (needed for the setup menu)
 TMP_SUDOERS="/tmp/mello-wifi.$$"
 cat > "$TMP_SUDOERS" << EOF
-$MELLO_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop mello-librespot, /bin/systemctl start mello-librespot, /bin/systemctl restart mello-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up
+$MELLO_USER ALL=(ALL) NOPASSWD: /usr/local/bin/wifi-connect, /usr/bin/nmcli, /bin/systemctl stop mello-librespot, /bin/systemctl start mello-librespot, /bin/systemctl restart mello-native, /bin/systemctl restart bluetooth, /usr/bin/hciconfig hci0 up, /usr/sbin/hciconfig hci0 up, /usr/bin/hciconfig hci0 down, /usr/sbin/hciconfig hci0 down
 EOF
 sudo visudo -cf "$TMP_SUDOERS"
 sudo install -m 440 "$TMP_SUDOERS" /etc/sudoers.d/mello-wifi
