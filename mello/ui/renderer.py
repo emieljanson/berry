@@ -268,7 +268,7 @@ class Renderer:
 
             # Settings button with rounded-rect background
             btn_text = self._render_text_rotated('Settings', self.font_medium, COLORS['text_primary'])
-            btn_text_rect = btn_text.get_rect(center=(center_x - 70, center_y))
+            btn_text_rect = btn_text.get_rect(center=(center_x - 90, center_y))
             pad_x, pad_y = 14, 10
             btn_bg = pygame.Rect(
                 btn_text_rect.x - pad_x,
